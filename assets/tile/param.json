@@ -1,0 +1,14 @@
+{
+  "applicationCategoryType": 65536,
+  "attribute": 536870913,
+  "attribute2": 0,
+  "attribute3": 4,
+  "titleId": "PSMC00001",
+  "deeplinkUri": "http://127.0.0.1:9040/launch",
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": {
+      "titleName": "BFplayer"
+    }
+  }
+}

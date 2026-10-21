@@ -1,0 +1,252 @@
+# Architecture
+
+## Decision
+
+The release is one resident Prospero payload. It embeds the complete stripped
+player ELF as gzip, uses the single Media-category `PSMC00001` title as both
+the dashboard tile and BigApp host, and binds a one-route HTTP listener only to
+`127.0.0.1:9040`. The tile calls `/launch`; the resident payload expands and
+validates the player, creates the BigApp context, and replaces it directly.
+
+The implementation retains only the proven GPL BigApp/ptrace/ELF-loader core.
+It does not embed or depend on the websrv application, libmicrohttpd, port
+8080, the catalog, `homebrew.js`, or the HBL picker.
+
+```text
+standalone payload -> loopback :9040 <- BFplayer tile
+        |                 |
+ compressed player   PSMC00001 BigApp transition
+        |                 |
+        +---------> BigApp player
+                          |
+              +-----------+---------------------+
+              |                |                |
+          Library UI      Playback engine    Persistence
+          SDL2/TTF        Kitchensink/FFmpeg SQLite
+              |                |
+          PS5 Pad          libass + SDL2
+                               |
+                       VideoOut / AudioOut
+```
+
+The only process boundary is the resident standalone launcher handing off to
+the BigApp player. Playback and the media library share that one UI process,
+so exiting a movie returns to the library without killing or restarting
+unrelated PS5 processes. The optional websrv package starts the same player ELF
+through websrv's existing host instead of BFplayer's resident launcher.
+
+## Dependencies
+
+| Component | Version/source | Role |
+| --- | --- | --- |
+| FFmpeg | 7.0.1, PacBrew v0.37 | Containers, codecs, network I/O, metadata |
+| SDL2 | PS5 port, PacBrew v0.37 | Window, software textures, AudioOut, Pad |
+| SDL_image | PacBrew v0.37 | Bounded JPEG/PNG local artwork decoding |
+| SDL_kitchensink | 2.0.0-a2 + PS5 PTS patch | Decode queues, sync, seeking, track switching |
+| libass | 0.17.3 | Styled text subtitles and embedded fonts |
+| TinyXML-2 | PacBrew v0.37 | UPnP device descriptions, SOAP, and DIDL-Lite |
+| SQLite | PacBrew v0.37 | Library index, resume position, preferences |
+| BigApp/ELF loader core | ps5-payload-websrv, GPL-3.0-or-later | Minimal in-memory BigApp transition |
+
+The project links these statically. SCE system libraries remain dynamic stubs,
+matching the official PacBrew FFplay binary.
+
+## UI-library decision
+
+RmlUi and John Törnblom's dlnaplay were reviewed for this release. RmlUi is a
+capable SDL-compatible UI layer, but replacing BFplayer's working SDL2/TTF
+interface would be a complete presentation rewrite. It would not remove
+FFmpeg decoder references, Kitchensink queues, converted video textures, or
+SDL audio buffers, and it would not by itself correct A/V synchronization.
+
+BFplayer therefore keeps its existing controller-tested SDL interface for this
+alpha. The useful playback and network design lessons were adopted directly:
+audible audio is the master clock, decoded video queues remain small, network
+packet queues are larger but bounded, and DLNA work runs outside the render
+thread. A later RmlUi migration remains possible if it provides a measured UI
+or maintainability benefit.
+
+## Playback capabilities
+
+Kitchensink exposes live stream replacement for video, audio, and embedded
+subtitle streams. Switching preserves the common player clock and does not
+reopen the container. Audio output is requested as 48 kHz stereo signed 16-bit
+because the current PS5 SDL backend supports mono/stereo S16 output; multichannel
+sources are downmixed by FFmpeg.
+
+When audio is present, the shared player clock follows the timestamp currently
+reaching the SDL audio device. BFplayer derives that timestamp from the next
+decoded sample position minus `SDL_GetQueuedAudioSize()`. Video follows this
+audible clock, which avoids treating a wall-clock video timer as authoritative
+while audio is still buffered. Video remains the primary clock only for
+video-only media. Seeks and audio changes clear stale SDL audio and refresh
+demuxed packets around the requested position. Subtitle changes refresh
+subtitle packets while preserving already queued audio, avoiding an
+unnecessary audible gap.
+
+Local playback uses 64 compressed video packets and 3 converted video frames.
+Network playback uses 128 compressed video packets and 4 converted video
+frames to absorb LAN jitter without creating a deep frame cache. Audio output
+keeps Kitchensink's bounded 64-frame queue; network audio packet capacity is
+raised from 64 to 128. Compressed input is also capped at 96 MiB for video,
+16 MiB for audio, and 8 MiB for subtitles. One oversized packet can enter an
+empty queue to preserve forward progress. These limits do not eliminate
+codec-internal reference frames, so the diagnostics also record peak resident
+memory, queue occupancy, and queued-audio milliseconds for hardware
+measurement.
+
+The display backend uses 1920x1080 for media up to 1080p and switches to a
+real 3840x2160 framebuffer for larger sources. Source resolution is preserved
+by default. An explicit `BFPLAYER_OUTPUT_POLICY=smooth` compatibility option
+can request proportional 1080p conversion for unusually expensive SDR media;
+it is not used automatically or for native HDR.
+
+For 10-bit BT.2020/PQ, BFplayer configures the PS5 VideoOut HDR10 format and
+presents decoded YUV420P10 frames directly through a 12-worker tiled
+YUV-to-RGB10 path. The output remains BT.2020/PQ, avoiding the former
+HDR-to-SDR conversion and redundant SDL texture copies. HLG follows the same
+native HDR10 path after a BT.2100 HLG OETF/OOTF-to-PQ conversion. A
+precomputed 10-bit table approximates the shared display gain from source luma
+in 64 bins while retaining 10-bit channel input and output, keeping the steady
+4K60 path inside the frame budget. PQ bypasses that table and remains direct.
+
+The direct presenter accepts independent source crop and destination
+rectangles, so original aspect, anamorphic display ratio, letterboxing, crop,
+and manual scale modes remain valid at 4K. The UI keeps a 1920x1080 logical
+canvas; active controls and subtitles are mapped into the physical output and
+blended at an HDR-safe reference level. Non-HDR and unsupported HDR transfers
+retain the bounded SDL software path, including the existing HDR-to-SDR
+fallback when native signalling cannot be enabled.
+
+The video renderer separates decoded pixel dimensions from the stream display
+aspect ratio. Pure, host-tested layout math independently applies the complete
+VLC Desktop aspect-override list, the complete VLC Desktop crop-ratio list,
+and Best fit, Fill screen/center-crop, or Fullscreen stretch. The trigger axes
+modify Triangle while preserving Triangle alone for video-track switching.
+Scale, aspect, and crop selections are playback-local. Every newly opened
+video starts in Best fit, Original aspect, and No crop so a previous manual
+override cannot distort unrelated media.
+
+The selected audio and subtitle stream indices are persisted per media path.
+Language tags are stored alongside the indices so a remux can recover the same
+language even when stream numbering changes. External subtitle paths and timing
+offsets are restored as well; an explicit `--subtitle` argument always wins.
+
+Network sources pass through FFmpeg unchanged. The main menu accepts a direct
+URL or opens a DLNA/UPnP MediaServer browser. DLNA discovery uses bounded SSDP
+M-SEARCH on active multicast IPv4 interfaces, then loads a limited number of
+device descriptions and pages through ContentDirectory results. Discovery and
+browsing use a cancellable SDL worker, 6-second HTTP operation limits, a
+10-second aggregate description budget, 2 MiB response limits, 64 KiB header
+limits, and capped server/result counts. Only audio/video items with supported
+stream URLs enter the visible listing.
+
+The direct-URL path uses an explicit scheme allowlist and rejects
+username/password authority fields. The runtime redacts URL credentials, query
+strings, and fragments from logs. It also skips per-title resume and
+track-preference persistence for such sensitive URLs so a signed stream token
+cannot be written to SQLite; global volume persistence is still retained.
+Network open and read operations have interrupt deadlines, probe/analysis
+caps, reconnect handling, and an explicit nested-protocol whitelist. Direct
+SMB is not linked; a NAS must expose DLNA/UPnP, HTTP(S), FTP, or another
+supported FFmpeg stream protocol.
+
+Primary local media, metadata probes, playlists, artwork, and standalone
+subtitle inputs use no-follow regular-file validation and descriptor-backed
+reads. FFmpeg receives custom AVIO for the primary local media file. Formats
+that declare companion files internally, such as local HLS segments or
+IDX+SUB, may still use FFmpeg's restricted local `file` protocol for those
+companions; this is the one deliberate exception needed for those formats.
+
+Embedded subtitles currently supported by Kitchensink are Text, HDMV text,
+SRT/SubRip, SSA/ASS, DVD bitmap, DVB bitmap, and PGS. External subtitles need a
+second FFmpeg demuxer and libass/bitmap renderer because a Kitchensink player is
+bound to one `AVFormatContext`; that layer is deliberately separate from the
+embedded-track implementation. The executable overrides Kitchensink's image
+subtitle renderer with a hardened, symbol-compatible implementation that
+validates rectangle geometry, palette count and indices, bounds cache growth,
+uses the correct FFmpeg RGB32 palette layout, and repairs unsafe cleanup and
+callback behavior in the upstream implementation.
+
+## Library safety rules
+
+- Open directories without following symlinks and inspect entries relative to
+  the opened descriptor with `fstatat(AT_SYMLINK_NOFOLLOW)`.
+- Capture the root device and do not cross `st_dev` during recursion.
+- Abort the active scan on `EIO`, `ESTALE`, `EBADF`, or `EFAULT`; do not retry
+  the same file descriptor.
+- Bound recursion depth, item count, and metadata-probe time.
+- Probe changed or previously unseen audio/video files only. Each library pass
+  has a 512-file enrichment budget, a five-second per-file interrupt deadline,
+  and stops enrichment after eight failures while preserving the basic index.
+- Persist results transactionally; an incomplete, cancelled, visitor-stopped,
+  or I/O-failed scan rolls back and keeps the last usable index.
+
+The library joins resume data into each indexed row to provide Continue
+Watching and Recently Played views. FFmpeg enrichment records title, duration,
+resolution, container, and primary codecs without competing with playback: the
+library scan thread is cancelled and joined before a movie starts.
+
+Library search uses the PS5 SDL backend's SceImeDialog bridge. The backend
+delivers the completed UTF-8 string as one or more `SDL_TEXTINPUT` events and a
+Return event; cancel delivers no text event, so the UI also observes dialog
+visibility to leave search mode cleanly. Search terms are normalized once,
+matched as AND tokens without per-entry allocation, and the filtered/sorted
+index is cached until the library generation, category, query, or sort changes.
+Sort selection is stored in SQLite and item identity is preserved by path when
+metadata refreshes or ordering changes.
+
+Favorites use a separate path-keyed SQLite table so a favorite survives when a
+removable USB drive is temporarily absent. Toggling updates the visible entry
+immediately. If a scan transaction is active, the write is queued and committed
+through the scanner's existing connection after the root transaction; pending
+state is overlaid on refreshed rows so the UI never rolls back a recent toggle.
+
+SQLite schema version 2 is migrated transactionally from earlier tables.
+Future schema versions are rejected, failed migration rolls back, and database
+text/row size is capped before values enter UI or playback state.
+
+Artwork discovery remains outside the database to avoid a schema migration and
+stale removable-drive paths. The main thread caches only the selected title's
+texture. Every selection or completed rescan uses an immediate-directory,
+non-symlink lookup; the loader then revalidates file identity/size, encoded
+format, dimensions, and pixel count before invoking SDL_image. Only JPEG and PNG
+decoder objects are pulled from the static SDL_image archive.
+
+## Packaging
+
+The primary release is one injectable payload:
+
+```text
+bfplayer-standalone.elf
+```
+
+At startup it streams the compressed embedded player into a CRC-verified,
+atomically replaced `/data/homebrew/BFplayer/bfplayer.elf`, writes the small
+font, icon, and runtime manifest, repairs `/system_ex/app/PSMC00001`, and
+registers `/user/app/PSMC00001/sce_sys`. It also removes the obsolete
+`PSMR00001` registration created by alpha.11/alpha.12. Tile launch maps the
+verified runtime image read-only rather than allocating a second decompressed
+copy. No separate player transfer or HBL installation is required. AppInst and
+kernel-system imports belong to the outer resident launcher; the player ELF
+retains its narrower import boundary. See `docs/STANDALONE_LAUNCHER.md`.
+
+An optional compatibility package is also provided:
+
+```text
+BFplayer-websrv.zip
+└── BFplayer
+    ├── eboot.elf
+    ├── assets/fonts
+    ├── sce_sys/icon0.png
+    └── build-manifest.json
+```
+
+This ZIP contains the player and its runtime assets without the standalone
+installer, Media tile, embedded player copy, or port 9040 listener. websrv
+discovers `eboot.elf`, supplies its absolute path as `argv[0]`, and performs
+the BigApp transition through its existing `FAKE00000` host. The stock
+plain-ELF path may use `/` as the working directory, so BFplayer resolves its
+packaged assets from `argv[0]` instead. BFplayer recognizes both the standalone
+`PSMC00001` host and websrv's `FAKE00000` host when returning to PlayStation
+Home.
