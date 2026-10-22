@@ -242,7 +242,7 @@ assert(diagnostics.includes('BFPLAYER_FATAL_SIGNAL'));
 assert(diagnostics.includes('BFPLAYER_LOG_TRUNCATED'));
 assert(!libraryUi.includes('std::string("Sort: ")'));
 assert(libraryUi.includes('library_item_name_less'));
-assert(libraryUi.includes('previous_series'));
+assert(libraryUi.includes('previous_group'));
 assert(libraryUi.includes('const bool empty = impl_->entries.empty();'));
 assert(!libraryUi.includes(
     'const bool empty = impl_->entries.empty() && !impl_->scanning;'));
@@ -253,8 +253,8 @@ const libraryCircleCase = libraryUi.slice(
         'bool play_queue = false;')),
     libraryUi.indexOf('case SDL_CONTROLLER_BUTTON_X:', libraryUi.indexOf(
         'bool play_queue = false;')));
-assert(libraryCircleCase.includes('leave_season'));
-assert(libraryCircleCase.includes('leave_series'));
+assert(libraryCircleCase.includes('leave_album'));
+assert(libraryCircleCase.includes('leave_artist'));
 assert(!libraryCircleCase.includes('play_queue'),
     'Circle must only navigate back and must never launch library media');
 assert(libraryUi.includes('if (browsing && event.type == SDL_KEYDOWN)'));
