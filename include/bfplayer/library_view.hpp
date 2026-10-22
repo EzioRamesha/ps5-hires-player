@@ -45,11 +45,11 @@ void sort_media_indices(
     LibrarySortMode mode,
     bool smart_prefers_recent);
 
-// Groups a media entry for album browsing: by (album_artist, album) metadata when at least
-// one of the album-identifying tags is present, falling back to the entry's containing folder
-// when neither tag is set (so untagged music is still browsable, never hidden). The returned
-// key is an opaque grouping identifier, not display text — use media_album_display_name for
-// what the UI shows.
+// Groups a media entry for album browsing: by (album_artist, album) metadata when the album
+// tag is present, falling back to the entry's containing folder when it is not (so untagged
+// music is still browsable, never hidden, and never merged across folders just because an
+// artist tag happens to match). The returned key is an opaque grouping identifier, not display
+// text — use media_album_display_name for what the UI shows.
 [[nodiscard]] std::string media_album_key(const MediaEntry& entry);
 
 // The human-readable label for the group media_album_key(entry) belongs to: the album title
