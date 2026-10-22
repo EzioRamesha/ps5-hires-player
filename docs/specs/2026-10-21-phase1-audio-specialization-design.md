@@ -133,6 +133,31 @@ not assumed**, using the same method BFplayer's own `docs/FFMPEG_SYMBOL_AUDIT.md
 establishes (grep the actual linked `libavformat.a`/`libavcodec.a` archive for the real symbols,
 the same reproducible method already used for the video codec list).
 
+**Correction (added after Task 1's audit landed, 2026-10-22): the DSD claim below was wrong on one
+half.** The original research concluded DSD was entirely out of reach; Task 1's exhaustive symbol
+audit (`docs/FORMAT_SUPPORT_AUDIO.md`) found FFmpeg's linked archive DOES carry DSD decoder
+symbols (`ff_dsd_lsbf_decoder`, `ff_dsd_lsbf_planar_decoder`, `ff_dsd_msbf_decoder`,
+`ff_dsd_msbf_planar_decoder`, `ff_dst_decoder`) and demuxers (`ff_dsf_demuxer`, `ff_wsd_demuxer`).
+These two findings are about different layers and both stand:
+
+- **Decoding a DSD file into PCM is possible** — FFmpeg can open and decode one like any other
+  format. A `.dsf` file should be playable, same as any other confirmed format.
+- **Native, bit-perfect DSD output is still not possible.** The audio-output research's actual
+  finding — confirmed against real `sceAudioOutOpen` validation code in the shadPS4 emulator —
+  is that the PS5's audio-output API is hard-locked to 48kHz PCM, full stop. DSD's whole value
+  proposition (a 1-bit stream at megahertz rates, played without converting to PCM) cannot survive
+  that conversion — a "DSD-supported" player on this platform means "can decode and downsample a
+  DSD file to 48kHz PCM like any lossy source," not "can play DSD content with any of the fidelity
+  DSD actually exists for."
+
+So: DSD file playback is in scope (nothing extra needed — it's just another FFmpeg-decoded format,
+covered by the same code path as everything else). Native/bit-perfect DSD output remains out of
+scope, for the original, still-correct reason. The original paragraph below is kept for the
+record rather than deleted, since it documents the (partially wrong) state of understanding before
+Task 1's audit — do not treat it as current.
+
+---
+
 **DSD is out of scope, not deferred.** The research found no evidence any audio API available to a
 PS5 homebrew payload (including direct `sceAudioOut` calls) could plausibly support DSD, native or
 DoP. This is not "Phase 2" — it is excluded from the project's goals entirely, and should be

@@ -22,7 +22,13 @@ framework — see `tests/library_view_tests.cpp` for the pattern).
 
 - Full spec: `docs/specs/2026-10-21-phase1-audio-specialization-design.md` — every task here
   implements a section of it.
-- DSD is out of scope entirely (confirmed no viable platform path) — do not add anything for it.
+- **Corrected 2026-10-22, after Task 1 landed:** DSD *decoding* is actually in scope — Task 1's
+  audit found FFmpeg's linked archive carries real DSD decoder/demuxer symbols, so a `.dsf` file
+  decodes like any other confirmed format, no extra work needed. What's still out of scope is
+  *native, bit-perfect DSD output* — the PS5 audio-output API is hard-locked to 48kHz PCM
+  regardless of source format (separate finding, still correct). Don't write code assuming DSD
+  files are unplayable; don't write code claiming DSD gets any special/bit-perfect treatment
+  either. See the spec's own correction note for the full explanation.
 - Format coverage must be **confirmed by audit**, never assumed from BFplayer's existing
   `docs/FORMAT_SUPPORT.md` (that list was written for video-testing priorities, not exhaustively).
 - Every removed file's build references (CMakeLists.txt entries, test executables) must be removed
