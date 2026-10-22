@@ -3528,7 +3528,7 @@ struct LibraryUi::Impl {
             std::string subtitle;
             switch (active_overlay) {
                 case LibraryOverlay::menu:
-                    title = "BFplayer";
+                    title = "Hi-res AMP";
                     subtitle = "Choose what you want to do";
                     rows = {
                         "Add local media",

@@ -3911,7 +3911,7 @@ int main(int argc, char** argv) {
 
     boot_stage("window-create-begin");
     app.window = SDL_CreateWindow(
-        "BFplayer",
+        "Hi-res AMP",
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
         kWindowWidth,

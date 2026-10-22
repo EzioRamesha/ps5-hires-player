@@ -154,7 +154,7 @@ static void send_ready_notification(void) {
     (void)snprintf(
         request.message,
         sizeof(request.message),
-        "BFplayer %s loaded. Open it from Media.",
+        "Hi-res AMP %s loaded. Open it from Media.",
         BFPLAYER_VERSION);
     result = sceKernelSendNotificationRequest(
         0, &request, sizeof(request), 0);

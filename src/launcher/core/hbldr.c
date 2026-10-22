@@ -68,7 +68,7 @@ static const char param_json[] = "{\n"
   "  \"localizedParameters\": {\n"
   "    \"defaultLanguage\": \"en-US\",\n"
   "    \"en-US\": {\n"
-  "      \"titleName\": \"BFplayer\"\n"
+  "      \"titleName\": \"Hi-res AMP\"\n"
   "    }\n"
   "  }\n"
   "}\n";
