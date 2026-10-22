@@ -278,28 +278,10 @@ assert(player.includes('"Unmute audio" : "Mute audio"'));
 assert(player.includes('kSettingShortSeekSeconds'));
 assert(player.includes('app.settings.short_seek_seconds'));
 assert(player.includes('app.settings.long_seek_seconds'));
-assert(player.includes('create_subtitle_texture'),
-    'subtitle switching updates only the subtitle texture');
 assert(player.includes('track-switch refresh'),
-    'audio and subtitle switches refresh around the current position');
+    'audio switches refresh around the current position');
 assert(player.includes('app.audio != 0 && type == KIT_STREAMTYPE_AUDIO'),
-    'subtitle changes preserve queued audio while refreshing packets');
-assert(player.includes('PlaybackOverlay::subtitles'),
-    'playback options expose a dedicated subtitle screen');
-assert(player.includes('Browse subtitle files...'),
-    'subtitle screen exposes the local subtitle browser');
-assert(player.includes('Online subtitle providers...'),
-    'subtitle screen exposes the provider chooser');
-assert(player.includes('OpenSubtitles  |  Requires an approved app API key'),
-    'provider chooser explains unavailable OpenSubtitles integration');
-assert(player.includes('Podnapisi  |  No supported public API') &&
-       player.includes('Addic7ed  |  No supported public API'),
-    'provider chooser shows unavailable non-API providers');
-assert(player.includes('Search by video filename') &&
-       player.includes('Search by movie or show title...'),
-    'SubDL provider exposes filename and title search');
-assert(player.includes('SubDL request failed - Circle: back'),
-    'provider failures remain visible');
+    'audio changes preserve queued audio while refreshing packets');
 assert(libraryUi.includes('navigation_repeat.poll(SDL_GetTicks64())') &&
        libraryUi.includes('wrap_list_index('),
     'library and Add Media lists support held repeat and wraparound');
@@ -308,8 +290,6 @@ assert(player.includes('app.navigation_repeat.poll(SDL_GetTicks64())') &&
     'playback lists support held repeat and wraparound');
 assert(playbackOsd.includes('const SDL_Color disabled'),
     'unavailable providers render in grey');
-assert(player.includes('subtitle-provider search provider=subdl'),
-    'online search emits credential-free diagnostics');
 assert(!player.includes('api_key='),
     'player never adds provider API keys to URLs');
 assert(!player.includes(
@@ -391,14 +371,6 @@ assert(player.includes('std::strcmp(output_policy, "smooth") == 0'));
 assert(!player.includes('std::strcmp(output_policy, "source") == 0'));
 assert(player.includes('display_aspect_from_sample_aspect('));
 assert(player.includes('av_guess_sample_aspect_ratio('));
-assert(player.includes(
-    'app.video_scale_mode = bfplayer::VideoScaleMode::fit'));
-assert(player.includes(
-    'app.video_crop_mode = bfplayer::VideoCropMode::default_crop'));
-assert(!player.includes(
-    'resume_database.get_setting("video_scale_mode"'));
-assert(!player.includes(
-    'resume_database.get_setting("video_crop_mode"'));
 assert(player.includes(
     '"playback-aspect frame=%dx%d sar=%d:%d sar_status=%d dar=%.6f"'));
 assert(player.includes('sceSystemServiceGetAppIdOfRunningBigApp'));

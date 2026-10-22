@@ -13,7 +13,6 @@
 #include "bfplayer/media_probe.hpp"
 #include "bfplayer/player_settings.hpp"
 #include "bfplayer/source_uri.hpp"
-#include "bfplayer/video_thumbnail.hpp"
 
 #include <SDL.h>
 #include <SDL_image.h>
@@ -689,7 +688,6 @@ struct LibraryUi::Impl {
     SDL_mutex* mutex = nullptr;
     SDL_Thread* scan_thread = nullptr;
     SDL_Thread* import_thread = nullptr;
-    SDL_Thread* thumbnail_thread = nullptr;
     std::vector<MediaEntry> entries;
     std::vector<MediaSource> sources;
     std::string active_series_root;
@@ -726,15 +724,7 @@ struct LibraryUi::Impl {
     int artwork_generation = -1;
     std::string artwork_media_path;
     std::string artwork_path;
-    std::string thumbnail_request_path;
-    std::string thumbnail_error;
-    VideoThumbnail thumbnail_result;
-    std::atomic<bool> thumbnail_cancel{false};
     std::atomic<bool> import_cancel{false};
-    bool thumbnail_loading = false;
-    bool thumbnail_ready = false;
-    bool artwork_is_video_frame = false;
-    std::int64_t artwork_position_ms = 0;
     std::string last_error;
     std::string database_path = "/data/BFplayer/library.db";
     int selected = 0;
@@ -832,12 +822,6 @@ struct LibraryUi::Impl {
             parse_setting_boolean(value, parsed_bool)) {
             loaded.resume_playback = parsed_bool;
         }
-        if (database.get_setting(
-                std::string(kSettingAutoSubtitles),
-                value) &&
-            parse_setting_boolean(value, parsed_bool)) {
-            loaded.auto_subtitles = parsed_bool;
-        }
         player_settings = normalized_player_settings(loaded);
     }
 
@@ -858,8 +842,6 @@ struct LibraryUi::Impl {
                  std::to_string(snapshot.osd_duration_ms)},
                 {std::string(kSettingResumePlayback),
                  snapshot.resume_playback ? "1" : "0"},
-                {std::string(kSettingAutoSubtitles),
-                 snapshot.auto_subtitles ? "1" : "0"},
             });
         if (!saved) {
             last_error =
@@ -874,13 +856,12 @@ struct LibraryUi::Impl {
         player_settings = snapshot;
         diagnostics_log(
             DiagnosticLevel::info,
-            "player-settings saved volume=%d short_seek=%d long_seek=%d osd_ms=%d resume=%d auto_subtitles=%d",
+            "player-settings saved volume=%d short_seek=%d long_seek=%d osd_ms=%d resume=%d",
             snapshot.volume_percent,
             snapshot.short_seek_seconds,
             snapshot.long_seek_seconds,
             snapshot.osd_duration_ms,
-            snapshot.resume_playback ? 1 : 0,
-            snapshot.auto_subtitles ? 1 : 0);
+            snapshot.resume_playback ? 1 : 0);
         return true;
     }
 
@@ -906,7 +887,7 @@ struct LibraryUi::Impl {
             const int item_count =
                 overlay == LibraryOverlay::menu
                     ? 8
-                    : (overlay == LibraryOverlay::settings ? 7 : 0);
+                    : (overlay == LibraryOverlay::settings ? 6 : 0);
             if (item_count > 0) {
                 overlay_selected = wrap_list_index(
                     overlay_selected,
@@ -977,7 +958,7 @@ struct LibraryUi::Impl {
         const int item_count =
             current == LibraryOverlay::menu
                 ? 8
-                : (current == LibraryOverlay::settings ? 7 : 0);
+                : (current == LibraryOverlay::settings ? 6 : 0);
         if (item_count > 0 &&
             (button == SDL_CONTROLLER_BUTTON_DPAD_UP ||
              button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)) {
@@ -1088,10 +1069,6 @@ struct LibraryUi::Impl {
                     !player_settings.resume_playback;
                 break;
             case 5:
-                player_settings.auto_subtitles =
-                    !player_settings.auto_subtitles;
-                break;
-            case 6:
                 player_settings = {};
                 break;
             default:
@@ -2704,142 +2681,7 @@ struct LibraryUi::Impl {
         empty_action_enabled = false;
     }
 
-    static int thumbnail_entry(void* userdata) {
-        auto* self = static_cast<Impl*>(userdata);
-        std::string path;
-        SDL_LockMutex(self->mutex);
-        path = self->thumbnail_request_path;
-        SDL_UnlockMutex(self->mutex);
-
-        VideoThumbnail result;
-        std::string error;
-        const bool succeeded = extract_video_thumbnail(
-            path,
-            result,
-            error,
-            &self->thumbnail_cancel);
-
-        SDL_LockMutex(self->mutex);
-        if (!self->thumbnail_cancel.load(std::memory_order_relaxed) &&
-            path == self->thumbnail_request_path) {
-            self->thumbnail_result = succeeded
-                ? std::move(result)
-                : VideoThumbnail{};
-            self->thumbnail_error = std::move(error);
-            self->thumbnail_loading = false;
-            self->thumbnail_ready = true;
-            ++self->published_generation;
-        }
-        SDL_UnlockMutex(self->mutex);
-        return 0;
-    }
-
-    void stop_thumbnail() {
-        thumbnail_cancel.store(true, std::memory_order_relaxed);
-        if (thumbnail_thread) {
-            SDL_WaitThread(thumbnail_thread, nullptr);
-            thumbnail_thread = nullptr;
-        }
-        if (mutex) {
-            SDL_LockMutex(mutex);
-            thumbnail_request_path.clear();
-            thumbnail_error.clear();
-            thumbnail_result = {};
-            thumbnail_loading = false;
-            thumbnail_ready = false;
-            SDL_UnlockMutex(mutex);
-        }
-        thumbnail_cancel.store(false, std::memory_order_relaxed);
-    }
-
-    void start_thumbnail(const std::string& media_path) {
-        stop_thumbnail();
-        thumbnail_cancel.store(false, std::memory_order_relaxed);
-        SDL_LockMutex(mutex);
-        thumbnail_request_path = media_path;
-        thumbnail_error.clear();
-        thumbnail_result = {};
-        thumbnail_loading = true;
-        thumbnail_ready = false;
-        SDL_UnlockMutex(mutex);
-        thumbnail_thread = SDL_CreateThread(
-            thumbnail_entry,
-            "bfplayer-video-preview",
-            this);
-        if (!thumbnail_thread) {
-            SDL_LockMutex(mutex);
-            thumbnail_loading = false;
-            thumbnail_error = SDL_GetError();
-            ++published_generation;
-            SDL_UnlockMutex(mutex);
-            diagnostics_log(
-                DiagnosticLevel::warning,
-                "video-preview thread create failed error=%s",
-                SDL_GetError());
-        }
-    }
-
-    void consume_thumbnail_result() {
-        VideoThumbnail result;
-        std::string path;
-        std::string error;
-        SDL_Thread* completed_thread = nullptr;
-        SDL_LockMutex(mutex);
-        if (thumbnail_ready) {
-            result = std::move(thumbnail_result);
-            path = thumbnail_request_path;
-            error = std::move(thumbnail_error);
-            thumbnail_ready = false;
-            completed_thread = thumbnail_thread;
-            thumbnail_thread = nullptr;
-        }
-        SDL_UnlockMutex(mutex);
-        if (!completed_thread) {
-            return;
-        }
-        SDL_WaitThread(completed_thread, nullptr);
-        if (path != artwork_media_path) {
-            return;
-        }
-        if (result.rgba.empty() || result.width <= 0 || result.height <= 0) {
-            diagnostics_log(
-                DiagnosticLevel::warning,
-                "video-preview unavailable path=%s error=%s",
-                path.c_str(),
-                error.c_str());
-            return;
-        }
-        SDL_Texture* texture = SDL_CreateTexture(
-            renderer,
-            SDL_PIXELFORMAT_RGBA32,
-            SDL_TEXTUREACCESS_STATIC,
-            result.width,
-            result.height);
-        if (!texture ||
-            SDL_UpdateTexture(
-                texture,
-                nullptr,
-                result.rgba.data(),
-                result.width * 4) != 0) {
-            diagnostics_log(
-                DiagnosticLevel::warning,
-                "video-preview texture failed path=%s error=%s",
-                path.c_str(),
-                SDL_GetError());
-            SDL_DestroyTexture(texture);
-            return;
-        }
-        SDL_DestroyTexture(artwork_texture);
-        artwork_texture = texture;
-        artwork_width = result.width;
-        artwork_height = result.height;
-        artwork_position_ms = result.position_ms;
-        artwork_is_video_frame = true;
-        artwork_path.clear();
-    }
-
     void clear_artwork() {
-        stop_thumbnail();
         SDL_DestroyTexture(artwork_texture);
         artwork_texture = nullptr;
         artwork_width = 0;
@@ -2847,8 +2689,6 @@ struct LibraryUi::Impl {
         artwork_generation = -1;
         artwork_media_path.clear();
         artwork_path.clear();
-        artwork_is_video_frame = false;
-        artwork_position_ms = 0;
     }
 
     void update_artwork(
@@ -2866,9 +2706,6 @@ struct LibraryUi::Impl {
 
         artwork_path = find_local_artwork(media_path);
         if (artwork_path.empty()) {
-            if (classify_media_path(media_path) == MediaKind::video) {
-                start_thumbnail(media_path);
-            }
             return;
         }
         ArtworkData artwork;
@@ -2880,7 +2717,6 @@ struct LibraryUi::Impl {
                 artwork_path.c_str(),
                 artwork_error.c_str());
             artwork_path.clear();
-            start_thumbnail(media_path);
             return;
         }
         SDL_RWops* source = SDL_RWFromConstMem(
@@ -2892,7 +2728,6 @@ struct LibraryUi::Impl {
                 "library-artwork rwops failed error=%s",
                 SDL_GetError());
             artwork_path.clear();
-            start_thumbnail(media_path);
             return;
         }
         SDL_Surface* surface = artwork.format == ArtworkFormat::png
@@ -2906,7 +2741,6 @@ struct LibraryUi::Impl {
                 artwork_path.c_str(),
                 IMG_GetError());
             artwork_path.clear();
-            start_thumbnail(media_path);
             return;
         }
         if (surface->w <= 0 || surface->h <= 0 ||
@@ -2922,7 +2756,6 @@ struct LibraryUi::Impl {
                 surface->h);
             SDL_FreeSurface(surface);
             artwork_path.clear();
-            start_thumbnail(media_path);
             return;
         }
         artwork_texture = SDL_CreateTextureFromSurface(renderer, surface);
@@ -2937,7 +2770,6 @@ struct LibraryUi::Impl {
             artwork_path.clear();
             artwork_width = 0;
             artwork_height = 0;
-            start_thumbnail(media_path);
         }
     }
 
@@ -3733,8 +3565,6 @@ struct LibraryUi::Impl {
                             " seconds",
                         std::string("Resume where I stopped                              ") +
                             (active_player_settings.resume_playback ? "On" : "Off"),
-                        std::string("Automatically select subtitles                     ") +
-                            (active_player_settings.auto_subtitles ? "On" : "Off"),
                         "Restore playback defaults",
                     };
                     add_footer_hint(FooterGlyph::dpad, "", "Change");
@@ -3747,14 +3577,13 @@ struct LibraryUi::Impl {
                     subtitle = "Library first, playback second";
                     rows = {
                         "Cross        Open or play                         Play / pause",
-                        "Circle       Back inside show                     Subtitle track",
+                        "Circle       Back inside show",
                         "Square       Add Media: Import folder             Audio track",
                         "Triangle     Add TV / remove source               Video track",
                         "D-pad        Navigate and change category         Seek short / long",
                         "L1 / R1      Previous or next page                 Previous / next chapter",
                         "L3 / R3      Favorite / sort                      Volume down / up",
                         "Touchpad     Add media                             Full controls",
-                        "L2/R2 + Triangle                                  Crop / aspect / scale",
                         "Options      Add, search, settings, exit           Playback menu",
                     };
                     add_footer_hint(FooterGlyph::circle, "", "Back");
@@ -3959,10 +3788,6 @@ struct LibraryUi::Impl {
         }
 
         update_artwork(active_media_path, active_generation);
-        bool is_thumbnail_loading = false;
-        SDL_LockMutex(mutex);
-        is_thumbnail_loading = thumbnail_loading;
-        SDL_UnlockMutex(mutex);
 
         std::string status =
             (active_series_root.empty()
@@ -4040,17 +3865,10 @@ struct LibraryUi::Impl {
                 muted);
         }
         std::string artwork_status;
-        if (artwork_texture && artwork_is_video_frame) {
-            artwork_status =
-                "VIDEO PREVIEW  |  " + format_duration(artwork_position_ms) +
-                "  |  " + std::to_string(artwork_width) + "x" +
-                std::to_string(artwork_height);
-        } else if (artwork_texture) {
+        if (artwork_texture) {
             artwork_status =
                 "LOCAL ARTWORK  |  " + std::to_string(artwork_width) + "x" +
                 std::to_string(artwork_height);
-        } else if (is_thumbnail_loading) {
-            artwork_status = "GENERATING VIDEO PREVIEW...";
         } else {
             artwork_status = "NO PREVIEW AVAILABLE";
         }
@@ -4907,7 +4725,6 @@ void LibraryUi::show_notice(std::string message, std::uint64_t milliseconds) {
 void LibraryUi::render() {
     impl_->update_ime_state();
     impl_->consume_dlna_job_result();
-    impl_->consume_thumbnail_result();
     impl_->consume_bulk_import_result();
     SDL_RenderSetLogicalSize(impl_->renderer, kUiWidth, kUiHeight);
     SDL_LockMutex(impl_->mutex);
