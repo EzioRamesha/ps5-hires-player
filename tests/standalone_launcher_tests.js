@@ -25,9 +25,6 @@ const player = fs.readFileSync(
 const remoteControl = fs.readFileSync(
     path.join(root, 'src', 'core', 'remote_control.cpp'),
     'utf8');
-const subtitleBrowser = fs.readFileSync(
-    path.join(root, 'src', 'core', 'subtitle_browser.cpp'),
-    'utf8');
 const demuxThread = fs.readFileSync(
     path.join(
         root,
@@ -303,10 +300,6 @@ assert(player.includes('Search by video filename') &&
     'SubDL provider exposes filename and title search');
 assert(player.includes('SubDL request failed - Circle: back'),
     'provider failures remain visible');
-assert(subtitleBrowser.includes('DIR* directory = opendir(output.path.c_str())'),
-    'PS5 subtitle traversal uses the proven opendir path');
-assert(subtitleBrowser.includes('lstat(path.c_str(), &status)'),
-    'subtitle browser falls back when PS5 fstatat is unsupported');
 assert(libraryUi.includes('navigation_repeat.poll(SDL_GetTicks64())') &&
        libraryUi.includes('wrap_list_index('),
     'library and Add Media lists support held repeat and wraparound');

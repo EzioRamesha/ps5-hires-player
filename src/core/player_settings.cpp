@@ -1,13 +1,47 @@
 #include "bfplayer/player_settings.hpp"
-#include "bfplayer/subtitle_provider.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 
 namespace bfplayer {
 namespace {
+
+// Was bfplayer::normalize_subtitle_languages(), declared in the now-deleted
+// subtitle_provider.hpp. Kept here, private to this file, purely to
+// normalize the PlayerSettings::subtitle_languages text field (comma
+// list of lowercase language codes) -- it has no remaining connection to
+// subtitle downloading now that subtitle_provider.cpp is gone.
+std::string normalize_subtitle_languages(std::string value) {
+    std::string output;
+    bool last_comma = true;
+    for (unsigned char character : value) {
+        if (std::isspace(character) || character == ';') {
+            character = ',';
+        }
+        if (character == ',') {
+            if (!last_comma && !output.empty()) {
+                output.push_back(',');
+                last_comma = true;
+            }
+            continue;
+        }
+        if (!std::isalnum(character) && character != '-') {
+            continue;
+        }
+        if (output.size() >= 96) {
+            break;
+        }
+        output.push_back(static_cast<char>(std::tolower(character)));
+        last_comma = false;
+    }
+    while (!output.empty() && output.back() == ',') {
+        output.pop_back();
+    }
+    return output.empty() ? "en" : output;
+}
 
 template <std::size_t Size>
 int cycle_choice(
