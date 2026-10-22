@@ -1110,7 +1110,8 @@ struct LibraryUi::Impl {
                             const std::string key = filter == kFilterArtists
                                 ? artist_group_key(entries[index])
                                 : media_album_key(entries[index]);
-                            return !seen_groups.insert(key).second;
+                            return !key.empty() &&
+                                !seen_groups.insert(key).second;
                         }),
                     filtered_cache.end());
             }
@@ -1134,10 +1135,21 @@ struct LibraryUi::Impl {
                     filtered_cache.begin(),
                     filtered_cache.end(),
                     [&](std::size_t index) {
-                        return !seen_albums.insert(
-                            media_album_key(entries[index])).second;
+                        const std::string key =
+                            media_album_key(entries[index]);
+                        return !key.empty() &&
+                            !seen_albums.insert(key).second;
                     }),
                 filtered_cache.end());
+            // One row per album, so sort by album name rather than by
+            // whichever track title happened to sort first.
+            std::stable_sort(
+                filtered_cache.begin(),
+                filtered_cache.end(),
+                [&](std::size_t left, std::size_t right) {
+                    return library_item_name_less(
+                        entries[left], entries[right], kFilterAlbums);
+                });
         } else {
             // Leaf level: one row per track. Real albums have a meaningful
             // track order, so sort by tag order first; fall back to a
@@ -2284,7 +2296,12 @@ struct LibraryUi::Impl {
         if (selected >= 0 && selected < static_cast<int>(filtered.size())) {
             const MediaEntry& entry =
                 entries[filtered[static_cast<std::size_t>(selected)]];
-            const std::string group = parent_path(entry.path);
+            // Only a video file can belong to a folder source. Audio
+            // tracks and group rows get an empty key, so Remove keeps
+            // showing the "not a configured library source" notice.
+            const std::string group = entry.kind == MediaKind::video
+                ? parent_path(entry.path)
+                : std::string{};
             for (const MediaSource& source : sources) {
                 const bool matches =
                     (source.kind == MediaSourceKind::movie_file &&
@@ -2469,6 +2486,9 @@ struct LibraryUi::Impl {
     void cycle_filter(int direction) {
         SDL_LockMutex(mutex);
         const std::string previous_path = selected_path_locked();
+        // Changing category always leaves any artist or album drill-down.
+        active_artist.clear();
+        active_album_key.clear();
         filter = (filter + (direction < 0 ? kFilterCount - 1 : 1)) % kFilterCount;
         selected = 0;
         first_visible = 0;
@@ -3587,7 +3607,7 @@ struct LibraryUi::Impl {
                     subtitle = "Library first, playback second";
                     rows = {
                         "Cross        Open or play                         Play / pause",
-                        "Circle       Back inside show",
+                        "Circle       Back out of artist / album",
                         "Square       Add Media: Import folder             Audio track",
                         "Triangle     Add TV / remove source               Video track",
                         "D-pad        Navigate and change category         Seek short / long",
@@ -3776,7 +3796,12 @@ struct LibraryUi::Impl {
             add_footer_hint(FooterGlyph::touchpad, "", "Add Media");
             add_footer_hint(FooterGlyph::options, "", "Menu");
         } else if (!browsing_group) {
-            add_footer_hint(FooterGlyph::cross, "", "Play");
+            const bool opens_group = active_filter == kFilterArtists ||
+                active_filter == kFilterAlbums;
+            add_footer_hint(
+                FooterGlyph::cross,
+                "",
+                opens_group ? "Open / Play" : "Play");
             add_footer_hint(FooterGlyph::triangle, "", "Remove");
             add_footer_hint(
                 FooterGlyph::left_stick,
@@ -3907,10 +3932,12 @@ struct LibraryUi::Impl {
             std::string text;
             if (is_artist_row) {
                 text = "ARTIST   " + artist_group_key(entry) + "   -   " +
-                    std::to_string(group_count) + " ALBUMS";
+                    std::to_string(group_count) +
+                    (group_count == 1 ? " ALBUM" : " ALBUMS");
             } else if (is_album_row) {
                 text = "ALBUM   " + media_album_display_name(entry) +
-                    "   -   " + std::to_string(group_count) + " TRACKS";
+                    "   -   " + std::to_string(group_count) +
+                    (group_count == 1 ? " TRACK" : " TRACKS");
             } else if (!album_key_root.empty()) {
                 text = "TRACK   " + display_name(entry);
             } else {
@@ -4658,7 +4685,8 @@ LibraryAction LibraryUi::handle_event(const SDL_Event& event, std::string& selec
                 play && impl_->active_album_key.empty() &&
                 ((impl_->filter == kFilterArtists &&
                   !impl_->active_artist.empty()) ||
-                 impl_->filter == kFilterAlbums);
+                 impl_->filter == kFilterAlbums) &&
+                !media_album_key(entry).empty();
             if (entering_artist) {
                 impl_->active_artist = artist_key;
                 impl_->active_album_key.clear();
