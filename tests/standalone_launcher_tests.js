@@ -94,7 +94,7 @@ assert.deepStrictEqual(Object.keys(param.localizedParameters).sort(), [
 assert.strictEqual(param.localizedParameters.defaultLanguage, 'en-US');
 assert.strictEqual(
     param.localizedParameters['en-US'].titleName,
-    'BFplayer');
+    'Hi-res AMP');
 
 const uri = new URL(param.deeplinkUri);
 assert.strictEqual(uri.protocol, 'http:');
@@ -153,7 +153,7 @@ assert(!launcher.includes('install_bigapp_host_registration'));
 assert(launcher.includes('install_title_dir'));
 assert(launcher.includes('Wudg3Xe3heE'));
 assert(launcher.includes('Content-Type: %s; charset=utf-8'));
-assert(launcher.includes('Launching BFplayer'));
+assert(launcher.includes('Launching Hi-res AMP'));
 assert(launcher.includes('window.close()'));
 assert(launcher.includes('self.close()'));
 assert(launcher.includes('history.go(-1)'));
@@ -233,8 +233,8 @@ assert(libraryUi.includes('fill_rounded_rect(impl_->renderer, chip, 14)'));
 assert(libraryUi.includes('controller_buttons_down.fill(false)'));
 assert(libraryUi.includes('FooterGlyph::triangle, "", "Remove"'));
 assert(libraryUi.includes('draw_logo(impl_->renderer, impl_->logo_texture'));
-assert(libraryUi.includes('title = "BFplayer"'));
-assert(libraryUi.includes('"Exit BFplayer"'));
+assert(libraryUi.includes('title = "Hi-res AMP"'));
+assert(libraryUi.includes('"Exit Hi-res AMP"'));
 const legacyVisibleName = `Media ${'Center'}`;
 assert(!libraryUi.includes(`title = "${legacyVisibleName}"`));
 assert(!libraryUi.includes(`"Exit ${legacyVisibleName}"`));

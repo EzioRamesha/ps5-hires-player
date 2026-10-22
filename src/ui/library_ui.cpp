@@ -3538,7 +3538,7 @@ struct LibraryUi::Impl {
                         "Controls & shortcuts",
                         "Playback settings",
                         "About & diagnostics",
-                        "Exit BFplayer",
+                        "Exit Hi-res AMP",
                     };
                     add_footer_hint(FooterGlyph::cross, "", "Select");
                     add_footer_hint(FooterGlyph::circle, "", "Close");
