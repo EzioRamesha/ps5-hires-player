@@ -110,6 +110,13 @@ constexpr int kWindowHeight = 1080;
 // Margin kept clear around the centered now-playing artwork so it never
 // touches the screen edges.
 constexpr int kNowPlayingArtworkMargin = 140;
+// Height of PlaybackOsd's transport strip (src/ui/playback_osd.cpp's
+// `SDL_Rect panel{0, kScreenHeight - 170, kScreenWidth, 170}`), which is
+// painted fully opaque on purpose. The now-playing artwork must be centered
+// above this strip, not in the full window, or its bottom edge sits under
+// the (eventually auto-shown) strip for any cover with aspect ratio <= ~2:1
+// -- i.e. effectively all real album art.
+constexpr int kNowPlayingOsdStripHeight = 170;
 constexpr int kPreferredOutputWidth = 3840;
 constexpr int kPreferredOutputHeight = 2160;
 constexpr int kPreferredOutputRefresh = 60;
@@ -370,6 +377,27 @@ enum class PlaybackOverlay {
     settings,
 };
 
+// Background job state for the now-playing artwork decode (see
+// update_now_playing_artwork()). The worker thread (now_playing_artwork_job_
+// entry()) only ever touches the "request_"/"result_"/"loading"/"ready"
+// fields below, and only while holding `mutex`; the main/render thread does
+// the same. The decoded SDL_Surface crosses from the worker to the main
+// thread this way, but the SDL_Texture created from it is only ever touched
+// on the main thread (consume_now_playing_artwork_job()), since SDL textures
+// are tied to the renderer and are not safe to create off its thread.
+struct NowPlayingArtworkJob {
+    SDL_Thread* thread = nullptr;
+    SDL_mutex* mutex = nullptr;
+    std::atomic<bool> cancel{false};
+    // Guarded by `mutex`:
+    std::string request_path;
+    bool loading = false;
+    bool ready = false;
+    std::string result_artwork_path;
+    SDL_Surface* result_surface = nullptr;
+    SDL_Color result_color{0, 0, 0, 255};
+};
+
 struct App {
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
@@ -383,7 +411,10 @@ struct App {
     bfplayer::RemoteControlServer remote_control;
     std::string current_media_path;
     // Now-playing artwork shown in place of a black screen during audio-only
-    // playback. Cached per track; see update_now_playing_artwork().
+    // playback. Cached per track; see update_now_playing_artwork(). The
+    // decode itself happens on now_playing_artwork_job's worker thread, off
+    // the render/audio-feed loop; only the texture fields below are ever
+    // touched by anything other than that worker.
     SDL_Texture* now_playing_artwork = nullptr;
     int now_playing_artwork_width = 0;
     int now_playing_artwork_height = 0;
@@ -393,6 +424,7 @@ struct App {
     std::string now_playing_artwork_media_path;
     std::string now_playing_artwork_path;
     SDL_Color now_playing_background_color{0, 0, 0, 255};
+    NowPlayingArtworkJob now_playing_artwork_job;
     std::string fallback_font;
     std::string ui_logo;
     std::string pending_remote_media_path;
@@ -1487,11 +1519,42 @@ void clear_now_playing_artwork(App& app) {
     app.now_playing_background_color = SDL_Color{0, 0, 0, 255};
 }
 
-// Samples a bounded number of pixels from a decoded artwork surface to
-// approximate its average color. This only runs once per track change (right
-// after the JPEG/PNG decode that update_now_playing_artwork() already pays
-// for), so a sparse sample is cheap and there is no need for a dedicated
-// color-extraction library: SDL2 already gives direct pixel access.
+// Cancels and joins the now-playing artwork worker thread (if any) and
+// discards any unconsumed result, without touching `job.mutex` itself (that
+// SDL_mutex is created once in main() and lives for the whole process, since
+// a new job is started on every track change). Safe to call when no job is
+// running. Must only be called from the main thread.
+void stop_now_playing_artwork_job(App& app) {
+    NowPlayingArtworkJob& job = app.now_playing_artwork_job;
+    job.cancel.store(true, std::memory_order_relaxed);
+    if (job.thread) {
+        SDL_WaitThread(job.thread, nullptr);
+        job.thread = nullptr;
+    }
+    if (job.mutex) {
+        SDL_LockMutex(job.mutex);
+        SDL_FreeSurface(job.result_surface);
+        job.result_surface = nullptr;
+        job.result_artwork_path.clear();
+        job.loading = false;
+        job.ready = false;
+        SDL_UnlockMutex(job.mutex);
+    }
+    job.cancel.store(false, std::memory_order_relaxed);
+}
+
+// Samples a bounded grid of pixels from a decoded artwork surface to
+// approximate its average color, run on the artwork worker thread (see
+// now_playing_artwork_job_entry() below) right after the JPEG/PNG decode
+// that already produced `surface`. The sample walks an actual strided
+// (x, y) grid -- at most kGridSamples steps in each dimension, so at most
+// kGridSamples^2 pixels are ever touched, never the full surface (which can
+// be up to the ArtworkLimits cap of ~20 million pixels) -- and converts the
+// surface once up front so every sampled pixel is a plain 4-byte read.
+// Walking both dimensions (rather than a flat 1D index stride) also avoids
+// the degenerate case where a power-of-two cover (1024x1024, 2048x2048,
+// ...) makes a 1D stride divide evenly into the width and collapse the
+// sample down to a handful of vertical columns.
 SDL_Color sample_now_playing_background_color(SDL_Surface* surface) {
     SDL_Color fallback{0, 0, 0, 255};
     if (!surface || surface->w <= 0 || surface->h <= 0) {
@@ -1505,28 +1568,22 @@ SDL_Color sample_now_playing_background_color(SDL_Surface* surface) {
         SDL_FreeSurface(rgba);
         return fallback;
     }
-    const std::uint64_t total_pixels =
-        static_cast<std::uint64_t>(rgba->w) * static_cast<std::uint64_t>(rgba->h);
-    constexpr std::uint64_t kMaxSamples = 4096;
-    const std::uint64_t stride =
-        total_pixels > kMaxSamples ? total_pixels / kMaxSamples : 1;
+    constexpr int kGridSamples = 64; // up to 64x64 = 4096 samples.
+    const int step_x = std::max(1, rgba->w / kGridSamples);
+    const int step_y = std::max(1, rgba->h / kGridSamples);
     const Uint8* pixels = static_cast<const Uint8*>(rgba->pixels);
     std::uint64_t sampled = 0;
     std::uint64_t sum_r = 0;
     std::uint64_t sum_g = 0;
     std::uint64_t sum_b = 0;
-    std::uint64_t pixel_index = 0;
-    for (int y = 0; y < rgba->h; ++y) {
+    for (int y = 0; y < rgba->h; y += step_y) {
         const Uint8* row = pixels + static_cast<std::size_t>(y) * rgba->pitch;
-        for (int x = 0; x < rgba->w; ++x) {
-            if (pixel_index % stride == 0) {
-                const Uint8* pixel = row + static_cast<std::size_t>(x) * 4;
-                sum_r += pixel[0];
-                sum_g += pixel[1];
-                sum_b += pixel[2];
-                ++sampled;
-            }
-            ++pixel_index;
+        for (int x = 0; x < rgba->w; x += step_x) {
+            const Uint8* pixel = row + static_cast<std::size_t>(x) * 4;
+            sum_r += pixel[0];
+            sum_g += pixel[1];
+            sum_b += pixel[2];
+            ++sampled;
         }
     }
     SDL_UnlockSurface(rgba);
@@ -1534,92 +1591,157 @@ SDL_Color sample_now_playing_background_color(SDL_Surface* surface) {
     if (sampled == 0) {
         return fallback;
     }
-    // Darken the sampled average so bright/light artwork does not wash out
-    // the OSD text drawn on top of it; this keeps the backdrop a subtle,
-    // artwork-tinted neutral rather than a vivid color.
-    constexpr double kDarken = 0.35;
+    // Scale the sampled average down so bright/light artwork does not wash
+    // out the OSD text drawn on top of it; this keeps the backdrop a
+    // subtle, artwork-tinted neutral rather than a vivid color. 0.35 means
+    // the backdrop keeps 35% of the sampled brightness (i.e. darkened 65%).
+    constexpr double kBackgroundBrightness = 0.35;
     return SDL_Color{
-        static_cast<Uint8>((sum_r / sampled) * kDarken),
-        static_cast<Uint8>((sum_g / sampled) * kDarken),
-        static_cast<Uint8>((sum_b / sampled) * kDarken),
+        static_cast<Uint8>((sum_r / sampled) * kBackgroundBrightness),
+        static_cast<Uint8>((sum_g / sampled) * kBackgroundBrightness),
+        static_cast<Uint8>((sum_b / sampled) * kBackgroundBrightness),
         255};
 }
 
-// Loads (or clears) the cached now-playing artwork texture when the current
-// track changes. This mirrors LibraryUi::update_artwork()'s caching lifetime
-// exactly (see src/ui/library_ui.cpp): a cheap path comparison is done every
-// call, and the actual find/decode/upload work only happens on a real
-// change, including remembering a failed/missing lookup so it is not retried
-// every frame for the rest of the track.
-void update_now_playing_artwork(App& app) {
-    if (app.current_media_path == app.now_playing_artwork_media_path) {
-        return;
+// Worker thread entry for the now-playing artwork job: find/read/decode the
+// artwork file and sample its background color -- the same work
+// update_now_playing_artwork() used to do inline on the render/audio-feed
+// loop (src/main.cpp's main loop queues audio via SDL_QueueAudio with only
+// kAudioBufferBytes = 64 KiB of headroom, so a decode stall here must never
+// block that loop). Runs entirely off the main thread; the only thing it
+// shares with the main thread is the decoded SDL_Surface, handed over
+// through `job->result_surface` under `job->mutex`. The SDL_Texture upload
+// itself happens later, on the main thread, in
+// consume_now_playing_artwork_job().
+int now_playing_artwork_job_entry(void* userdata) {
+    auto* job = static_cast<NowPlayingArtworkJob*>(userdata);
+    std::string media_path;
+    SDL_LockMutex(job->mutex);
+    media_path = job->request_path;
+    SDL_UnlockMutex(job->mutex);
+
+    std::string artwork_path;
+    SDL_Surface* surface = nullptr;
+    SDL_Color color{0, 0, 0, 255};
+    if (!job->cancel.load(std::memory_order_relaxed)) {
+        artwork_path = bfplayer::find_local_artwork(media_path);
     }
-    clear_now_playing_artwork(app);
-    app.now_playing_artwork_media_path = app.current_media_path;
-    if (app.current_media_path.empty()) {
-        return;
+    if (!artwork_path.empty() && !job->cancel.load(std::memory_order_relaxed)) {
+        bfplayer::ArtworkData artwork;
+        std::string artwork_error;
+        if (!bfplayer::load_local_artwork(artwork_path, artwork, artwork_error)) {
+            bfplayer::diagnostics_log(
+                bfplayer::DiagnosticLevel::warning,
+                "now-playing-artwork load failed path=%s error=%s",
+                artwork_path.c_str(),
+                artwork_error.c_str());
+            artwork_path.clear();
+        } else if (!job->cancel.load(std::memory_order_relaxed)) {
+            SDL_RWops* source = SDL_RWFromConstMem(
+                artwork.encoded.data(),
+                static_cast<int>(artwork.encoded.size()));
+            if (!source) {
+                bfplayer::diagnostics_log(
+                    bfplayer::DiagnosticLevel::warning,
+                    "now-playing-artwork rwops failed error=%s",
+                    SDL_GetError());
+                artwork_path.clear();
+            } else {
+                SDL_Surface* decoded =
+                    artwork.format == bfplayer::ArtworkFormat::png
+                        ? IMG_LoadPNG_RW(source)
+                        : IMG_LoadJPG_RW(source);
+                SDL_RWclose(source);
+                if (!decoded) {
+                    bfplayer::diagnostics_log(
+                        bfplayer::DiagnosticLevel::warning,
+                        "now-playing-artwork decode failed path=%s error=%s",
+                        artwork_path.c_str(),
+                        IMG_GetError());
+                    artwork_path.clear();
+                } else if (
+                    decoded->w <= 0 || decoded->h <= 0 ||
+                    static_cast<std::uint32_t>(decoded->w) != artwork.width ||
+                    static_cast<std::uint32_t>(decoded->h) != artwork.height) {
+                    bfplayer::diagnostics_log(
+                        bfplayer::DiagnosticLevel::warning,
+                        "now-playing-artwork dimensions changed path=%s expected=%ux%u actual=%dx%d",
+                        artwork_path.c_str(),
+                        artwork.width,
+                        artwork.height,
+                        decoded->w,
+                        decoded->h);
+                    SDL_FreeSurface(decoded);
+                    artwork_path.clear();
+                } else {
+                    color = sample_now_playing_background_color(decoded);
+                    surface = decoded;
+                }
+            }
+        }
     }
-    app.now_playing_artwork_path =
-        bfplayer::find_local_artwork(app.current_media_path);
-    if (app.now_playing_artwork_path.empty()) {
-        return;
-    }
-    bfplayer::ArtworkData artwork;
-    std::string artwork_error;
-    if (!bfplayer::load_local_artwork(
-            app.now_playing_artwork_path, artwork, artwork_error)) {
-        bfplayer::diagnostics_log(
-            bfplayer::DiagnosticLevel::warning,
-            "now-playing-artwork load failed path=%s error=%s",
-            app.now_playing_artwork_path.c_str(),
-            artwork_error.c_str());
-        app.now_playing_artwork_path.clear();
-        return;
-    }
-    SDL_RWops* source = SDL_RWFromConstMem(
-        artwork.encoded.data(),
-        static_cast<int>(artwork.encoded.size()));
-    if (!source) {
-        bfplayer::diagnostics_log(
-            bfplayer::DiagnosticLevel::warning,
-            "now-playing-artwork rwops failed error=%s",
-            SDL_GetError());
-        app.now_playing_artwork_path.clear();
-        return;
-    }
-    SDL_Surface* surface = artwork.format == bfplayer::ArtworkFormat::png
-        ? IMG_LoadPNG_RW(source)
-        : IMG_LoadJPG_RW(source);
-    SDL_RWclose(source);
-    if (!surface) {
-        bfplayer::diagnostics_log(
-            bfplayer::DiagnosticLevel::warning,
-            "now-playing-artwork decode failed path=%s error=%s",
-            app.now_playing_artwork_path.c_str(),
-            IMG_GetError());
-        app.now_playing_artwork_path.clear();
-        return;
-    }
-    if (surface->w <= 0 || surface->h <= 0 ||
-        static_cast<std::uint32_t>(surface->w) != artwork.width ||
-        static_cast<std::uint32_t>(surface->h) != artwork.height) {
-        bfplayer::diagnostics_log(
-            bfplayer::DiagnosticLevel::warning,
-            "now-playing-artwork dimensions changed path=%s expected=%ux%u actual=%dx%d",
-            app.now_playing_artwork_path.c_str(),
-            artwork.width,
-            artwork.height,
-            surface->w,
-            surface->h);
+    if (job->cancel.load(std::memory_order_relaxed)) {
         SDL_FreeSurface(surface);
-        app.now_playing_artwork_path.clear();
+        surface = nullptr;
+    }
+    SDL_LockMutex(job->mutex);
+    if (!job->cancel.load(std::memory_order_relaxed) &&
+        media_path == job->request_path) {
+        SDL_FreeSurface(job->result_surface);
+        job->result_surface = surface;
+        job->result_artwork_path = artwork_path;
+        job->result_color = color;
+        job->loading = false;
+        job->ready = true;
+    } else {
+        SDL_FreeSurface(surface);
+    }
+    SDL_UnlockMutex(job->mutex);
+    return 0;
+}
+
+// Picks up a finished now-playing artwork job, if any, and uploads its
+// decoded surface as an SDL_Texture. This is the only place the texture
+// upload happens, and it only runs once per completed job (not once per
+// frame): the mutex section itself is a handful of pointer/bool moves, so
+// calling this every loop iteration costs nothing on a cache hit.
+void consume_now_playing_artwork_job(App& app) {
+    NowPlayingArtworkJob& job = app.now_playing_artwork_job;
+    if (!job.mutex) {
         return;
     }
-    app.now_playing_background_color =
-        sample_now_playing_background_color(surface);
-    app.now_playing_artwork =
-        SDL_CreateTextureFromSurface(app.renderer, surface);
+    bool ready = false;
+    SDL_Surface* surface = nullptr;
+    std::string artwork_path;
+    SDL_Color color{0, 0, 0, 255};
+    SDL_Thread* completed_thread = nullptr;
+    SDL_LockMutex(job.mutex);
+    if (job.ready) {
+        ready = true;
+        surface = job.result_surface;
+        job.result_surface = nullptr;
+        artwork_path = std::move(job.result_artwork_path);
+        job.result_artwork_path.clear();
+        color = job.result_color;
+        job.ready = false;
+        completed_thread = job.thread;
+        job.thread = nullptr;
+    }
+    SDL_UnlockMutex(job.mutex);
+    if (!ready) {
+        return;
+    }
+    if (completed_thread) {
+        SDL_WaitThread(completed_thread, nullptr);
+    }
+    if (!surface) {
+        // No local artwork found, or it failed to load/decode; leave the
+        // plain black backdrop in place (already the default).
+        return;
+    }
+    app.now_playing_artwork_path = artwork_path;
+    app.now_playing_background_color = color;
+    app.now_playing_artwork = SDL_CreateTextureFromSurface(app.renderer, surface);
     app.now_playing_artwork_width = surface->w;
     app.now_playing_artwork_height = surface->h;
     SDL_FreeSurface(surface);
@@ -1632,6 +1754,54 @@ void update_now_playing_artwork(App& app) {
         app.now_playing_artwork_width = 0;
         app.now_playing_artwork_height = 0;
         app.now_playing_background_color = SDL_Color{0, 0, 0, 255};
+    }
+}
+
+// Loads (or clears) the cached now-playing artwork texture when the current
+// track changes. Mirrors LibraryUi::update_artwork()'s caching lifetime
+// (see src/ui/library_ui.cpp): a cheap path comparison is done every call,
+// and a real change is remembered immediately (including a failed/missing
+// lookup, so it is not retried every frame for the rest of the track) even
+// though the actual find/decode/sample work happens asynchronously on
+// now_playing_artwork_job's worker thread -- see now_playing_artwork_job_
+// entry() and consume_now_playing_artwork_job() above. Unlike
+// LibraryUi::update_artwork(), this one runs on a loop that is also feeding
+// the audio queue every iteration, so it must never block on the decode.
+void update_now_playing_artwork(App& app) {
+    consume_now_playing_artwork_job(app);
+    if (app.current_media_path == app.now_playing_artwork_media_path) {
+        return;
+    }
+    stop_now_playing_artwork_job(app);
+    clear_now_playing_artwork(app);
+    app.now_playing_artwork_media_path = app.current_media_path;
+    if (app.current_media_path.empty()) {
+        return;
+    }
+    NowPlayingArtworkJob& job = app.now_playing_artwork_job;
+    if (!job.mutex) {
+        // The mutex failed to create at startup; fall back to no artwork
+        // for this track rather than start an unsynchronized job.
+        return;
+    }
+    SDL_LockMutex(job.mutex);
+    job.request_path = app.current_media_path;
+    job.loading = true;
+    job.ready = false;
+    SDL_UnlockMutex(job.mutex);
+    job.cancel.store(false, std::memory_order_relaxed);
+    job.thread = SDL_CreateThread(
+        now_playing_artwork_job_entry,
+        "bfplayer-now-playing-art",
+        &job);
+    if (!job.thread) {
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork thread create failed error=%s",
+            SDL_GetError());
+        SDL_LockMutex(job.mutex);
+        job.loading = false;
+        SDL_UnlockMutex(job.mutex);
     }
 }
 
@@ -3450,13 +3620,26 @@ PlaybackOutcome run_player(
                     app.video,
                     layout.crop_source ? &source : nullptr,
                     &destination);
-            } else if (app.now_playing_artwork) {
+            } else if (
+                app.now_playing_artwork &&
+                app.now_playing_artwork_width > 0 &&
+                app.now_playing_artwork_height > 0) {
                 // Large, centered album art over the sampled-color backdrop,
                 // Poweramp-style, instead of a near-empty black frame.
+                //
+                // Centered in the region ABOVE PlaybackOsd's opaque
+                // transport strip (kNowPlayingOsdStripHeight), not the full
+                // window: that strip is painted at full alpha whenever it is
+                // shown, and for any cover with aspect ratio <= ~2:1 (i.e.
+                // effectively all real album art, square or portrait) this
+                // path is height-bound, so centering in the full window
+                // would put the art's bottom edge under the strip.
                 const int available_width =
                     kWindowWidth - 2 * kNowPlayingArtworkMargin;
+                const int available_region_height =
+                    kWindowHeight - kNowPlayingOsdStripHeight;
                 const int available_height =
-                    kWindowHeight - 2 * kNowPlayingArtworkMargin;
+                    available_region_height - 2 * kNowPlayingArtworkMargin;
                 const double scale = std::min(
                     static_cast<double>(available_width) /
                         app.now_playing_artwork_width,
@@ -3470,7 +3653,7 @@ PlaybackOutcome run_player(
                     static_cast<int>(app.now_playing_artwork_height * scale));
                 const SDL_Rect target{
                     (kWindowWidth - width) / 2,
-                    (kWindowHeight - height) / 2,
+                    (available_region_height - height) / 2,
                     width,
                     height};
                 SDL_RenderCopy(
@@ -3811,6 +3994,7 @@ void close_media(App& app) {
     close_audio(app);
     app.osd.close();
     destroy_video_textures(app);
+    stop_now_playing_artwork_job(app);
     clear_now_playing_artwork(app);
     Kit_ClosePlayer(app.player);
     if (app.source) {
@@ -3995,6 +4179,10 @@ void cleanup(App& app) {
     }
     SDL_DestroyRenderer(app.renderer);
     SDL_DestroyWindow(app.window);
+    if (app.now_playing_artwork_job.mutex) {
+        SDL_DestroyMutex(app.now_playing_artwork_job.mutex);
+        app.now_playing_artwork_job.mutex = nullptr;
+    }
     Kit_Quit();
     SDL_Quit();
 }
@@ -4091,6 +4279,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     boot_stage("sdl-init-complete");
+    app.now_playing_artwork_job.mutex = SDL_CreateMutex();
+    if (!app.now_playing_artwork_job.mutex) {
+        // Not fatal: update_now_playing_artwork() falls back to showing no
+        // artwork (plain black backdrop) for the whole run if this failed.
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork mutex create failed error=%s",
+            SDL_GetError());
+    }
     Kit_SetHint(KIT_HINT_THREAD_COUNT, kVideoDecoderThreads);
     apply_playback_buffer_policy(playback_buffer_policy(false));
     boot_stage("kitchensink-init-begin");
