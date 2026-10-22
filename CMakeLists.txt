@@ -57,6 +57,38 @@ if(BUILD_TESTING)
     target_link_libraries(media_sources_tests PRIVATE bfplayer_core)
     add_test(NAME media_sources_tests COMMAND media_sources_tests)
 
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(BFPLAYER_FFMPEG QUIET libavformat libavcodec libavutil)
+    endif()
+    find_program(BFPLAYER_FFMPEG_EXECUTABLE ffmpeg)
+    if(BFPLAYER_FFMPEG_FOUND AND BFPLAYER_FFMPEG_EXECUTABLE)
+        add_executable(
+            media_probe_tests
+            tests/media_probe_tests.cpp
+            src/core/media_probe.cpp
+        )
+        target_include_directories(
+            media_probe_tests
+            PRIVATE ${BFPLAYER_FFMPEG_INCLUDE_DIRS}
+        )
+        target_link_directories(
+            media_probe_tests
+            PRIVATE ${BFPLAYER_FFMPEG_LIBRARY_DIRS}
+        )
+        target_link_libraries(
+            media_probe_tests
+            PRIVATE bfplayer_core ${BFPLAYER_FFMPEG_LIBRARIES}
+        )
+        target_compile_definitions(
+            media_probe_tests
+            PRIVATE
+                BFPLAYER_FFMPEG_EXECUTABLE="${BFPLAYER_FFMPEG_EXECUTABLE}"
+                BFPLAYER_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        add_test(NAME media_probe_tests COMMAND media_probe_tests)
+    endif()
+
     add_executable(player_settings_tests tests/player_settings_tests.cpp)
     target_link_libraries(player_settings_tests PRIVATE bfplayer_core)
     add_test(NAME player_settings_tests COMMAND player_settings_tests)

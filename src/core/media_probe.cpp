@@ -15,6 +15,7 @@ extern "C" {
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <string>
 
@@ -197,6 +198,43 @@ bool probe_media_metadata(
     if (const AVDictionaryEntry* title =
             av_dict_get(format->metadata, "title", nullptr, 0)) {
         entry.title = bounded_text(title->value);
+    }
+    if (const AVDictionaryEntry* artist =
+            av_dict_get(format->metadata, "artist", nullptr, 0)) {
+        entry.artist = bounded_text(artist->value);
+    }
+    if (const AVDictionaryEntry* album =
+            av_dict_get(format->metadata, "album", nullptr, 0)) {
+        entry.album = bounded_text(album->value);
+    }
+    if (const AVDictionaryEntry* album_artist =
+            av_dict_get(format->metadata, "album_artist", nullptr, 0)) {
+        entry.album_artist = bounded_text(album_artist->value);
+    } else {
+        entry.album_artist = entry.artist;  // fall back per the spec's documented contract
+    }
+    if (const AVDictionaryEntry* genre =
+            av_dict_get(format->metadata, "genre", nullptr, 0)) {
+        entry.genre = bounded_text(genre->value);
+    }
+    if (const AVDictionaryEntry* track =
+            av_dict_get(format->metadata, "track", nullptr, 0)) {
+        // FFmpeg's "track" tag is often "N" or "N/total" - parse the leading integer only,
+        // and leave track_number at its 0 default on anything unparseable rather than guessing.
+        entry.track_number = std::atoi(track->value);
+    }
+    if (const AVDictionaryEntry* disc =
+            av_dict_get(format->metadata, "disc", nullptr, 0)) {
+        int parsed = std::atoi(disc->value);
+        entry.disc_number = parsed > 0 ? parsed : 1;  // keep the struct's documented default of 1
+    }
+    if (const AVDictionaryEntry* date =
+            av_dict_get(format->metadata, "date", nullptr, 0)) {
+        // FFmpeg's "date" tag is often a bare year or an ISO date - take the leading 4 digits.
+        int parsed_year = std::atoi(date->value);
+        if (parsed_year > 1000) {  // reject obvious non-year garbage without being falsely strict
+            entry.year = parsed_year;
+        }
     }
 
     const int video_index = av_find_best_stream(
