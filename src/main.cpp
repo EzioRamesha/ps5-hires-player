@@ -11,6 +11,7 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+#include "bfplayer/artwork.hpp"
 #include "bfplayer/controller_buttons.hpp"
 #include "bfplayer/diagnostics.hpp"
 #include "bfplayer/hdr_yuv_tonemap.h"
@@ -24,6 +25,8 @@ extern "C" {
 #include "bfplayer/remote_control.hpp"
 #include "bfplayer/safe_read_file.hpp"
 #include "bfplayer/source_uri.hpp"
+
+#include <SDL_image.h>
 
 #include <algorithm>
 #include <array>
@@ -104,6 +107,9 @@ extern "C" int sceSystemServiceKillApp(
 
 constexpr int kWindowWidth = 1920;
 constexpr int kWindowHeight = 1080;
+// Margin kept clear around the centered now-playing artwork so it never
+// touches the screen edges.
+constexpr int kNowPlayingArtworkMargin = 140;
 constexpr int kPreferredOutputWidth = 3840;
 constexpr int kPreferredOutputHeight = 2160;
 constexpr int kPreferredOutputRefresh = 60;
@@ -376,6 +382,17 @@ struct App {
     bfplayer::PlaybackOsd osd;
     bfplayer::RemoteControlServer remote_control;
     std::string current_media_path;
+    // Now-playing artwork shown in place of a black screen during audio-only
+    // playback. Cached per track; see update_now_playing_artwork().
+    SDL_Texture* now_playing_artwork = nullptr;
+    int now_playing_artwork_width = 0;
+    int now_playing_artwork_height = 0;
+    // The media path this artwork was (attempted to be) loaded for, used to
+    // detect a track change. Kept even when no artwork was found, so a
+    // missing/corrupt-artwork track is not re-probed every frame.
+    std::string now_playing_artwork_media_path;
+    std::string now_playing_artwork_path;
+    SDL_Color now_playing_background_color{0, 0, 0, 255};
     std::string fallback_font;
     std::string ui_logo;
     std::string pending_remote_media_path;
@@ -1458,6 +1475,164 @@ bool open_audio(App& app) {
 void destroy_video_textures(App& app) {
     SDL_DestroyTexture(app.video);
     app.video = nullptr;
+}
+
+void clear_now_playing_artwork(App& app) {
+    SDL_DestroyTexture(app.now_playing_artwork);
+    app.now_playing_artwork = nullptr;
+    app.now_playing_artwork_width = 0;
+    app.now_playing_artwork_height = 0;
+    app.now_playing_artwork_media_path.clear();
+    app.now_playing_artwork_path.clear();
+    app.now_playing_background_color = SDL_Color{0, 0, 0, 255};
+}
+
+// Samples a bounded number of pixels from a decoded artwork surface to
+// approximate its average color. This only runs once per track change (right
+// after the JPEG/PNG decode that update_now_playing_artwork() already pays
+// for), so a sparse sample is cheap and there is no need for a dedicated
+// color-extraction library: SDL2 already gives direct pixel access.
+SDL_Color sample_now_playing_background_color(SDL_Surface* surface) {
+    SDL_Color fallback{0, 0, 0, 255};
+    if (!surface || surface->w <= 0 || surface->h <= 0) {
+        return fallback;
+    }
+    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
+    if (!rgba) {
+        return fallback;
+    }
+    if (SDL_LockSurface(rgba) != 0) {
+        SDL_FreeSurface(rgba);
+        return fallback;
+    }
+    const std::uint64_t total_pixels =
+        static_cast<std::uint64_t>(rgba->w) * static_cast<std::uint64_t>(rgba->h);
+    constexpr std::uint64_t kMaxSamples = 4096;
+    const std::uint64_t stride =
+        total_pixels > kMaxSamples ? total_pixels / kMaxSamples : 1;
+    const Uint8* pixels = static_cast<const Uint8*>(rgba->pixels);
+    std::uint64_t sampled = 0;
+    std::uint64_t sum_r = 0;
+    std::uint64_t sum_g = 0;
+    std::uint64_t sum_b = 0;
+    std::uint64_t pixel_index = 0;
+    for (int y = 0; y < rgba->h; ++y) {
+        const Uint8* row = pixels + static_cast<std::size_t>(y) * rgba->pitch;
+        for (int x = 0; x < rgba->w; ++x) {
+            if (pixel_index % stride == 0) {
+                const Uint8* pixel = row + static_cast<std::size_t>(x) * 4;
+                sum_r += pixel[0];
+                sum_g += pixel[1];
+                sum_b += pixel[2];
+                ++sampled;
+            }
+            ++pixel_index;
+        }
+    }
+    SDL_UnlockSurface(rgba);
+    SDL_FreeSurface(rgba);
+    if (sampled == 0) {
+        return fallback;
+    }
+    // Darken the sampled average so bright/light artwork does not wash out
+    // the OSD text drawn on top of it; this keeps the backdrop a subtle,
+    // artwork-tinted neutral rather than a vivid color.
+    constexpr double kDarken = 0.35;
+    return SDL_Color{
+        static_cast<Uint8>((sum_r / sampled) * kDarken),
+        static_cast<Uint8>((sum_g / sampled) * kDarken),
+        static_cast<Uint8>((sum_b / sampled) * kDarken),
+        255};
+}
+
+// Loads (or clears) the cached now-playing artwork texture when the current
+// track changes. This mirrors LibraryUi::update_artwork()'s caching lifetime
+// exactly (see src/ui/library_ui.cpp): a cheap path comparison is done every
+// call, and the actual find/decode/upload work only happens on a real
+// change, including remembering a failed/missing lookup so it is not retried
+// every frame for the rest of the track.
+void update_now_playing_artwork(App& app) {
+    if (app.current_media_path == app.now_playing_artwork_media_path) {
+        return;
+    }
+    clear_now_playing_artwork(app);
+    app.now_playing_artwork_media_path = app.current_media_path;
+    if (app.current_media_path.empty()) {
+        return;
+    }
+    app.now_playing_artwork_path =
+        bfplayer::find_local_artwork(app.current_media_path);
+    if (app.now_playing_artwork_path.empty()) {
+        return;
+    }
+    bfplayer::ArtworkData artwork;
+    std::string artwork_error;
+    if (!bfplayer::load_local_artwork(
+            app.now_playing_artwork_path, artwork, artwork_error)) {
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork load failed path=%s error=%s",
+            app.now_playing_artwork_path.c_str(),
+            artwork_error.c_str());
+        app.now_playing_artwork_path.clear();
+        return;
+    }
+    SDL_RWops* source = SDL_RWFromConstMem(
+        artwork.encoded.data(),
+        static_cast<int>(artwork.encoded.size()));
+    if (!source) {
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork rwops failed error=%s",
+            SDL_GetError());
+        app.now_playing_artwork_path.clear();
+        return;
+    }
+    SDL_Surface* surface = artwork.format == bfplayer::ArtworkFormat::png
+        ? IMG_LoadPNG_RW(source)
+        : IMG_LoadJPG_RW(source);
+    SDL_RWclose(source);
+    if (!surface) {
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork decode failed path=%s error=%s",
+            app.now_playing_artwork_path.c_str(),
+            IMG_GetError());
+        app.now_playing_artwork_path.clear();
+        return;
+    }
+    if (surface->w <= 0 || surface->h <= 0 ||
+        static_cast<std::uint32_t>(surface->w) != artwork.width ||
+        static_cast<std::uint32_t>(surface->h) != artwork.height) {
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork dimensions changed path=%s expected=%ux%u actual=%dx%d",
+            app.now_playing_artwork_path.c_str(),
+            artwork.width,
+            artwork.height,
+            surface->w,
+            surface->h);
+        SDL_FreeSurface(surface);
+        app.now_playing_artwork_path.clear();
+        return;
+    }
+    app.now_playing_background_color =
+        sample_now_playing_background_color(surface);
+    app.now_playing_artwork =
+        SDL_CreateTextureFromSurface(app.renderer, surface);
+    app.now_playing_artwork_width = surface->w;
+    app.now_playing_artwork_height = surface->h;
+    SDL_FreeSurface(surface);
+    if (!app.now_playing_artwork) {
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork texture failed error=%s",
+            SDL_GetError());
+        app.now_playing_artwork_path.clear();
+        app.now_playing_artwork_width = 0;
+        app.now_playing_artwork_height = 0;
+        app.now_playing_background_color = SDL_Color{0, 0, 0, 255};
+    }
 }
 
 bool create_video_textures(App& app) {
@@ -3244,7 +3419,19 @@ PlaybackOutcome run_player(
             }
         } else if (should_render) {
             const Uint64 render_started = SDL_GetPerformanceCounter();
-            SDL_SetRenderDrawColor(app.renderer, 0, 0, 0, 255);
+            if (!app.video) {
+                update_now_playing_artwork(app);
+            }
+            if (!app.video && app.now_playing_artwork) {
+                SDL_SetRenderDrawColor(
+                    app.renderer,
+                    app.now_playing_background_color.r,
+                    app.now_playing_background_color.g,
+                    app.now_playing_background_color.b,
+                    255);
+            } else {
+                SDL_SetRenderDrawColor(app.renderer, 0, 0, 0, 255);
+            }
             SDL_RenderClear(app.renderer);
             if (app.video) {
                 const VideoPresentLayout layout = player_video_layout(app);
@@ -3263,6 +3450,31 @@ PlaybackOutcome run_player(
                     app.video,
                     layout.crop_source ? &source : nullptr,
                     &destination);
+            } else if (app.now_playing_artwork) {
+                // Large, centered album art over the sampled-color backdrop,
+                // Poweramp-style, instead of a near-empty black frame.
+                const int available_width =
+                    kWindowWidth - 2 * kNowPlayingArtworkMargin;
+                const int available_height =
+                    kWindowHeight - 2 * kNowPlayingArtworkMargin;
+                const double scale = std::min(
+                    static_cast<double>(available_width) /
+                        app.now_playing_artwork_width,
+                    static_cast<double>(available_height) /
+                        app.now_playing_artwork_height);
+                const int width = std::max(
+                    1,
+                    static_cast<int>(app.now_playing_artwork_width * scale));
+                const int height = std::max(
+                    1,
+                    static_cast<int>(app.now_playing_artwork_height * scale));
+                const SDL_Rect target{
+                    (kWindowWidth - width) / 2,
+                    (kWindowHeight - height) / 2,
+                    width,
+                    height};
+                SDL_RenderCopy(
+                    app.renderer, app.now_playing_artwork, nullptr, &target);
             }
             app.osd.render(
                 Kit_GetPlayerPosition(app.player),
@@ -3599,6 +3811,7 @@ void close_media(App& app) {
     close_audio(app);
     app.osd.close();
     destroy_video_textures(app);
+    clear_now_playing_artwork(app);
     Kit_ClosePlayer(app.player);
     if (app.source) {
         Kit_CloseSource(app.source);
