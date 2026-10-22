@@ -45,12 +45,16 @@ void sort_media_indices(
     LibrarySortMode mode,
     bool smart_prefers_recent);
 
-// Returns the first directory below series_root that contains the media item.
-// A direct child file has no season. Deeper layouts remain grouped by their
-// top-level season directory (Show/Season 1/Disc 1/Episode.mkv -> Season 1).
-[[nodiscard]] std::string media_season_root(
-    const MediaEntry& entry,
-    std::string_view series_root);
+// Groups a media entry for album browsing: by (album_artist, album) metadata when at least
+// one of the album-identifying tags is present, falling back to the entry's containing folder
+// when neither tag is set (so untagged music is still browsable, never hidden). The returned
+// key is an opaque grouping identifier, not display text — use media_album_display_name for
+// what the UI shows.
+[[nodiscard]] std::string media_album_key(const MediaEntry& entry);
+
+// The human-readable label for the group media_album_key(entry) belongs to: the album title
+// when tagged, or the containing folder's name when not.
+[[nodiscard]] std::string media_album_display_name(const MediaEntry& entry);
 
 // Removes exactly one UTF-8 code point from the end of text. SDL text input is
 // valid UTF-8, so malformed trailing bytes are treated as one best-effort unit.

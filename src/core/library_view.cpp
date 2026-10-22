@@ -239,30 +239,31 @@ void sort_media_indices(
     });
 }
 
-std::string media_season_root(
-    const MediaEntry& entry,
-    std::string_view series_root) {
-    if (entry.path.empty() || series_root.empty()) {
-        return {};
+namespace {
+std::string containing_folder(const std::string& path) {
+    const std::size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? std::string{} : path.substr(0, slash);
+}
+
+std::string folder_name(const std::string& path) {
+    const std::string folder = containing_folder(path);
+    const std::size_t slash = folder.find_last_of("/\\");
+    return slash == std::string::npos ? folder : folder.substr(slash + 1);
+}
+} // namespace
+
+std::string media_album_key(const MediaEntry& entry) {
+    if (!entry.album_artist.empty() || !entry.album.empty()) {
+        return entry.album_artist + '\x1F' + entry.album;
     }
-    std::string normalized_path = entry.path;
-    std::string normalized_root(series_root);
-    std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
-    std::replace(normalized_root.begin(), normalized_root.end(), '\\', '/');
-    while (normalized_root.size() > 1 && normalized_root.back() == '/') {
-        normalized_root.pop_back();
+    return containing_folder(entry.path);
+}
+
+std::string media_album_display_name(const MediaEntry& entry) {
+    if (!entry.album.empty()) {
+        return entry.album;
     }
-    if (normalized_path.size() <= normalized_root.size() ||
-        normalized_path.compare(0, normalized_root.size(), normalized_root) != 0 ||
-        normalized_path[normalized_root.size()] != '/') {
-        return {};
-    }
-    const std::size_t relative_start = normalized_root.size() + 1;
-    const std::size_t separator = normalized_path.find('/', relative_start);
-    if (separator == std::string::npos || separator == relative_start) {
-        return {};
-    }
-    return normalized_path.substr(0, separator);
+    return folder_name(entry.path);
 }
 
 bool erase_last_utf8_codepoint(std::string& text) noexcept {

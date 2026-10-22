@@ -75,40 +75,40 @@ int main() {
     check(bfplayer::next_library_sort_mode(LibrarySortMode::size) == LibrarySortMode::smart,
           "sort cycle wraps");
 
-    MediaEntry nested_episode{
-        "/media/Shows/The Example/Season 2/Disc 1/Episode 4.mkv",
-        "Episode 4.mkv",
-        MediaKind::video};
+    MediaEntry tagged{
+        "/music/Flac/01 Track.flac",
+        "01 Track.flac",
+        MediaKind::audio};
+    tagged.album_artist = "Pink Floyd";
+    tagged.album = "The Dark Side of the Moon";
     check(
-        bfplayer::media_season_root(
-            nested_episode, "/media/Shows/The Example") ==
-            "/media/Shows/The Example/Season 2",
-        "nested episode groups under its first season directory");
-    MediaEntry direct_episode{
-        "/media/Shows/The Example/Special.mkv",
-        "Special.mkv",
-        MediaKind::video};
+        bfplayer::media_album_key(tagged) == "Pink Floyd\x1F""The Dark Side of the Moon",
+        "album key combines album artist and album, separated by a byte that cannot appear in tags");
     check(
-        bfplayer::media_season_root(
-            direct_episode, "/media/Shows/The Example").empty(),
-        "direct series file remains an ungrouped episode");
-    MediaEntry sibling_episode{
-        "/media/Shows/The Example Extra/Season 1/Episode.mkv",
-        "Episode.mkv",
-        MediaKind::video};
+        bfplayer::media_album_display_name(tagged) == "The Dark Side of the Moon",
+        "display name shows the album title");
+
+    MediaEntry untagged{
+        "/music/Ripped/Some Folder/track07.mp3",
+        "track07.mp3",
+        MediaKind::audio};
+    // album_artist/album left at their default empty strings
     check(
-        bfplayer::media_season_root(
-            sibling_episode, "/media/Shows/The Example").empty(),
-        "season grouping enforces a series-root path boundary");
-    MediaEntry windows_episode{
-        R"(D:\Shows\Example\Season 10\Episode.mkv)",
-        "Episode.mkv",
-        MediaKind::video};
+        bfplayer::media_album_key(untagged) == "/music/Ripped/Some Folder",
+        "an untagged file falls back to grouping by its containing folder");
     check(
-        bfplayer::media_season_root(
-            windows_episode, R"(D:\Shows\Example)") ==
-            "D:/Shows/Example/Season 10",
-        "season grouping normalizes Windows separators for host tests");
+        bfplayer::media_album_display_name(untagged) == "Some Folder",
+        "an untagged file's display name falls back to the folder name");
+
+    MediaEntry partially_tagged{
+        "/music/Weird/05 Mystery.flac",
+        "05 Mystery.flac",
+        MediaKind::audio};
+    partially_tagged.album = "Compilation";
+    // album_artist left empty on purpose
+    check(
+        bfplayer::media_album_key(partially_tagged) == "\x1F""Compilation",
+        "an album tag with no album-artist tag still groups by album alone, not by folder");
 
     std::string utf8 = "caf\xC3\xA9";
     check(bfplayer::erase_last_utf8_codepoint(utf8) && utf8 == "caf",
