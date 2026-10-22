@@ -32,6 +32,47 @@ a dated verification doc, following the existing `docs/ALPHA*_VERIFICATION.md` p
   numbers in this plan."
 - Conventional commits, one purpose per commit.
 
+## Carry-Forward From Plan 1a's Final Review
+
+Plan 1a (backend/data layer) is complete and merged. Its whole-branch review surfaced items that
+are this plan's responsibility, not Plan 1a's — recorded here since Plan 1a's own ledger
+(`.superpowers/sdd/2026-10-21-phase1-backend-and-data-layer/`) is deleted once its review closed
+clean.
+
+- **Task 1 Step 3's premise may be wrong — re-check before executing.** `playback_osd.cpp` has
+  ZERO references to any removed video module, type, or symbol (confirmed by grep against the
+  live file during Plan 1a's Task 2 review). Read the real file first; if the subtitle/video-track
+  selection logic described in Task 1 Step 3 isn't there in the form expected, adjust the step
+  rather than assuming the brief's description is accurate.
+- **Decide the fate of `MediaSourceKind::tv_folder` / `annotate_media_sources`.** Plan 1a's Task 3
+  removed the `MediaEntry` fields this function used to write (`series_root`/`series_title`/
+  `explicit_movie`), turning `annotate_media_sources()` (`src/core/media_sources.cpp`) into a
+  documented no-op rather than attempting an early, informal version of this plan's own
+  album-grouping work. It's still called 8 times from `src/ui/library_ui.cpp`. Decide whether it
+  (and the whole TV-folder source model in `include/bfplayer/media_sources.hpp`) still has a
+  purpose for a music player, or should be deleted outright.
+- **`tests/standalone_launcher_tests.js` currently pins features this plan removes.** Roughly 15
+  content assertions (around lines 281-317 and 392-403 as of Plan 1a's last commit) check that
+  `src/main.cpp` contains specific subtitle-provider strings (`'Browse subtitle files...'`,
+  `'Online subtitle providers...'`, OpenSubtitles/SubDL references) and a reference to the deleted
+  `VideoCropMode` type. These pass today only because `main.cpp` hasn't been touched yet. When this
+  plan's Task 1 removes the corresponding call sites, this test file will go red for reasons that
+  will read like a regression but are actually the intended removal — update these assertions as
+  part of Task 1 rather than being surprised by them.
+- **`PlayerSettings::subtitle_languages` (`src/core/player_settings.cpp`) is now orphaned.** Plan
+  1a's Task 2 kept it only because `normalize_subtitle_languages` is a genuine `bfplayer_core`
+  dependency unrelated to the deleted subtitle-download feature, and removing it was out of that
+  task's scope. Now that this plan is removing the rest of the subtitle UI, decide whether this
+  field/function still earns its place or should go too.
+- **CI does not run two of Plan 1a's new test suites.** `media_probe_tests` (needs
+  `libavformat`/`libavcodec`/`libavutil` dev packages + an `ffmpeg` binary) and
+  `library_database_tests` (needs the SQLite amalgamation fetched into
+  `build/host-deps/sqlite-amalgamation-3530300/`) both silently skip in CI because their CMake
+  gates aren't satisfied there, and neither gate logs a `message(STATUS ...)` when it skips — so
+  the gap doesn't show up in CI logs. This is a pre-existing gap this plan didn't create, but it's
+  worth raising to a human before more backend logic accumulates behind untested-in-CI gates; not
+  this plan's job to fix silently.
+
 ---
 
 ## Task 1: Fix the compile breaks Plan 1a's Task 2 left behind
