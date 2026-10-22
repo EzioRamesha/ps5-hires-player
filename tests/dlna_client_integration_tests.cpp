@@ -1,5 +1,6 @@
 #include "bfplayer/dlna_client.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -424,8 +425,11 @@ void test_paged_chunked_browse() {
                 "<dc:title>Song 1</dc:title>"
                 "<upnp:class>object.item.audioItem.musicTrack"
                 "</upnp:class>"
+                "<upnp:albumArtURI>/art/song-1.jpg"
+                "</upnp:albumArtURI>"
                 "<res protocolInfo=\"http-get:*:audio/flac:*\" "
-                "duration=\"0:03:15.500\">media/song-1.flac</res>"
+                "duration=\"0:03:15.500\" size=\"123456789\">"
+                "media/song-1.flac</res>"
                 "</item>"
                 "</DIDL-Lite>";
             const std::string body =
@@ -449,7 +453,10 @@ void test_paged_chunked_browse() {
     check(error.empty(), "paged browse has no error");
     check(result.total_matches == 3, "total match count is retained");
     check(!result.truncated, "complete paged browse is not truncated");
-    check(result.objects.size() == 3, "all paged objects are returned");
+    check(
+        result.objects.size() == 2,
+        "video-classified items are excluded; only the container and the "
+        "audio item are returned");
     check(
         result.objects[0].container &&
             result.objects[0].id == "shows" &&
@@ -457,19 +464,22 @@ void test_paged_chunked_browse() {
             result.objects[0].title == "Shows & Series",
         "container metadata parses");
     check(
-        result.objects[1].resource_url ==
-            server.base_url() + "/media/episode-1.mkv" &&
-            result.objects[1].artwork_url ==
-                server.base_url() + "/art/episode-1.jpg" &&
-            result.objects[1].duration_us == 2523250000LL &&
-            result.objects[1].size_bytes == 123456789 &&
-            result.objects[1].resolution == "1920x1080",
-        "video resource metadata parses");
+        std::none_of(
+            result.objects.begin(),
+            result.objects.end(),
+            [](const bfplayer::DlnaObject& object) {
+                return object.id == "episode-1";
+            }),
+        "a video-classified item does not enter the visible listing");
     check(
-        result.objects[2].resource_url ==
+        result.objects[1].resource_url ==
             server.base_url() + "/upnp/control/media/song-1.flac" &&
-            result.objects[2].duration_us == 195500000LL,
-        "relative audio resource resolves against control URL");
+            result.objects[1].artwork_url ==
+                server.base_url() + "/art/song-1.jpg" &&
+            result.objects[1].duration_us == 195500000LL &&
+            result.objects[1].size_bytes == 123456789,
+        "relative audio resource resolves against control URL and its "
+        "resource metadata parses");
 }
 
 void test_resource_filtering_and_result_cap() {
@@ -543,14 +553,14 @@ void test_resource_filtering_and_result_cap() {
             std::string didl = didl_header();
             for (int index = 0; index < 3; ++index) {
                 didl +=
-                    "<item id=\"video-" + std::to_string(index) +
+                    "<item id=\"track-" + std::to_string(index) +
                     "\" parentID=\"0\">"
-                    "<dc:title>Video " + std::to_string(index) +
+                    "<dc:title>Track " + std::to_string(index) +
                     "</dc:title>"
-                    "<upnp:class>object.item.videoItem</upnp:class>"
-                    "<res protocolInfo=\"http-get:*:video/mp4:*\">" +
-                    origin + "/video-" + std::to_string(index) +
-                    ".mp4</res></item>";
+                    "<upnp:class>object.item.audioItem</upnp:class>"
+                    "<res protocolInfo=\"http-get:*:audio/flac:*\">" +
+                    origin + "/track-" + std::to_string(index) +
+                    ".flac</res></item>";
             }
             didl += "</DIDL-Lite>";
             const std::string body =
@@ -598,15 +608,15 @@ void test_versioned_service_and_resource_fallback() {
             const std::string didl =
                 didl_header() +
                 "<item id=\"fallback\" parentID=\"0\">"
-                "<dc:title>Fallback Video</dc:title>"
-                "<upnp:class>object.item.videoItem</upnp:class>"
-                "<res protocolInfo=\"http-get:*:video/mp4:*\">"
-                "http://user:password@nas/rejected.mp4</res>"
-                "<res protocolInfo=\"smb-get:*:video/mp4:*\">"
-                "smb://nas/share/rejected.mp4</res>"
-                "<res protocolInfo=\"HTTP-GET:*:video/mp4:*\" "
+                "<dc:title>Fallback Audio</dc:title>"
+                "<upnp:class>object.item.audioItem</upnp:class>"
+                "<res protocolInfo=\"http-get:*:audio/flac:*\">"
+                "http://user:password@nas/rejected.flac</res>"
+                "<res protocolInfo=\"smb-get:*:audio/flac:*\">"
+                "smb://nas/share/rejected.flac</res>"
+                "<res protocolInfo=\"HTTP-GET:*:audio/flac:*\" "
                 "duration=\"0:01:02.500\"> \n" +
-                origin + "/media/fallback.mp4 \n</res>"
+                origin + "/media/fallback.flac \n</res>"
                 "</item>"
                 "<item id=\"typed\" parentID=\"0\">"
                 "<dc:title>Protocol-typed Audio</dc:title>"
@@ -615,13 +625,12 @@ void test_versioned_service_and_resource_fallback() {
                 "/media/song.flac</res>"
                 "</item>"
                 "<item id=\"matching\" parentID=\"0\">"
-                "<dc:title>Matching Video</dc:title>"
-                "<upnp:class>object.item.videoItem</upnp:class>"
-                "<res protocolInfo=\"http-get:*:audio/mpeg:*\">"
-                "/media/wrong.mp3</res>"
-                "<res protocolInfo=\"http-get:*:video/x-matroska:*\" "
-                "resolution=\"3840x2160\">"
-                "/media/right.mkv</res>"
+                "<dc:title>Matching Audio</dc:title>"
+                "<upnp:class>object.item.audioItem</upnp:class>"
+                "<res protocolInfo=\"http-get:*:video/mp4:*\">"
+                "/media/wrong.mp4</res>"
+                "<res protocolInfo=\"http-get:*:audio/flac:*\">"
+                "/media/right.flac</res>"
                 "</item>"
                 "</DIDL-Lite>";
             return http_response(
@@ -653,7 +662,7 @@ void test_versioned_service_and_resource_fallback() {
         "generic typed media and valid fallbacks are retained");
     check(
         result.objects[0].resource_url ==
-                server.base_url() + "/media/fallback.mp4" &&
+                server.base_url() + "/media/fallback.flac" &&
             result.objects[0].duration_us == 62500000LL,
         "invalid earlier resources do not hide a valid later stream");
     check(
@@ -662,8 +671,7 @@ void test_versioned_service_and_resource_fallback() {
         "protocol MIME identifies generic media items");
     check(
         result.objects[2].resource_url ==
-                server.base_url() + "/media/right.mkv" &&
-            result.objects[2].resolution == "3840x2160",
+            server.base_url() + "/media/right.flac",
         "resource MIME matching the item class wins");
 }
 
@@ -683,10 +691,10 @@ void test_partial_failure_and_cancellation() {
                 didl_header() +
                 "<item id=\"first\" parentID=\"0\">"
                 "<dc:title>First</dc:title>"
-                "<upnp:class>object.item.videoItem</upnp:class>"
-                "<res protocolInfo=\"http-get:*:video/mp4:*\">"
+                "<upnp:class>object.item.audioItem</upnp:class>"
+                "<res protocolInfo=\"http-get:*:audio/flac:*\">"
                 "http://127.0.0.1:" + std::to_string(port) +
-                "/first.mp4</res></item></DIDL-Lite>";
+                "/first.flac</res></item></DIDL-Lite>";
             const std::string body =
                 soap_browse_response(didl, 1, 2);
             return http_response(200, "OK", body);

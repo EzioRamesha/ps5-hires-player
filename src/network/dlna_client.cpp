@@ -1048,9 +1048,7 @@ bool browse_page(
         const DlnaMediaKind resource_kind =
             media_kind_from_protocol(object.protocol_info);
         const bool media_item =
-            class_kind == DlnaMediaKind::video ||
             class_kind == DlnaMediaKind::audio ||
-            resource_kind == DlnaMediaKind::video ||
             resource_kind == DlnaMediaKind::audio;
         if ((object.container && !object.id.empty()) ||
             (media_item && object.playable())) {
@@ -1359,11 +1357,21 @@ bool browse_dlna_directory(
             break;
         }
         start += returned;
-        if ((output.total_matches > 0 &&
-             start >= output.total_matches) ||
-            output.objects.size() >= bounded_max) {
+        const bool reached_server_total =
+            output.total_matches > 0 &&
+            start >= output.total_matches;
+        const bool reached_object_cap =
+            output.objects.size() >= bounded_max;
+        if (reached_server_total || reached_object_cap) {
+            // The server's child count includes items this client
+            // excludes (non-audio kinds, unsupported stream URIs,
+            // credentialed URLs, ...), so it can exceed the visible
+            // object count even once every server page has been
+            // walked. Only flag truncation when the client's own
+            // object cap cut the browse short, not when the server's
+            // total was simply larger than the filtered result.
             output.truncated =
-                output.total_matches > output.objects.size();
+                reached_object_cap && !reached_server_total;
             break;
         }
     }

@@ -138,7 +138,7 @@ M-SEARCH on active multicast IPv4 interfaces, then loads a limited number of
 device descriptions and pages through ContentDirectory results. Discovery and
 browsing use a cancellable SDL worker, 6-second HTTP operation limits, a
 10-second aggregate description budget, 2 MiB response limits, 64 KiB header
-limits, and capped server/result counts. Only audio/video items with supported
+limits, and capped server/result counts. Only audio items with supported
 stream URLs enter the visible listing.
 
 The direct-URL path uses an explicit scheme allowlist and rejects
