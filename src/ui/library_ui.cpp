@@ -51,7 +51,9 @@ constexpr int kListWidth = 1228;
 constexpr int kArtworkPanelX = 1310;
 constexpr int kArtworkPanelWidth = 552;
 constexpr int kArtworkPanelHeight = 720;
-constexpr int kFilterCount = 8;
+constexpr int kFilterCount = 7;
+constexpr int kFilterArtists = 4;
+constexpr int kFilterAlbums = 5;
 constexpr std::size_t kMetadataProbeBudget = 512;
 constexpr std::size_t kMetadataFailureBudget = 8;
 constexpr std::size_t kMaxSearchBytes = 512;
@@ -462,35 +464,6 @@ std::string lower_ascii(std::string value) {
     return value;
 }
 
-bool looks_like_episode(const MediaEntry& entry) {
-    if (entry.kind != MediaKind::video || entry.explicit_movie) {
-        return false;
-    }
-    if (!entry.series_root.empty()) {
-        return true;
-    }
-    const std::string value = lower_ascii(entry.path);
-    if (value.find("/season ") != std::string::npos ||
-        value.find("\\season ") != std::string::npos) {
-        return true;
-    }
-    for (std::size_t index = 0; index + 5 < value.size(); ++index) {
-        if (value[index] == 's' && std::isdigit(static_cast<unsigned char>(value[index + 1])) &&
-            std::isdigit(static_cast<unsigned char>(value[index + 2])) && value[index + 3] == 'e' &&
-            std::isdigit(static_cast<unsigned char>(value[index + 4])) &&
-            std::isdigit(static_cast<unsigned char>(value[index + 5]))) {
-            return true;
-        }
-        if (std::isdigit(static_cast<unsigned char>(value[index])) &&
-            value[index + 1] == 'x' &&
-            std::isdigit(static_cast<unsigned char>(value[index + 2])) &&
-            std::isdigit(static_cast<unsigned char>(value[index + 3]))) {
-            return true;
-        }
-    }
-    return false;
-}
-
 std::string parent_path(const std::string& path) {
     if (path.empty() || path == "/") {
         return "/";
@@ -502,34 +475,37 @@ std::string parent_path(const std::string& path) {
     return path.substr(0, slash);
 }
 
-std::string series_group_key(const MediaEntry& entry) {
-    if (!entry.series_root.empty()) {
-        return entry.series_root;
+// Groups a media entry for artist browsing: by the artist tag when present,
+// falling back to media_album_display_name's own folder-name fallback when
+// untagged, for consistency with how an untagged file is already grouped
+// for album browsing.
+std::string artist_group_key(const MediaEntry& entry) {
+    if (!entry.artist.empty()) {
+        return entry.artist;
     }
-    return looks_like_episode(entry) ? parent_path(entry.path) : std::string{};
+    return media_album_display_name(entry);
 }
 
-std::string series_display_name(const MediaEntry& entry) {
-    if (!entry.series_title.empty()) {
-        return entry.series_title;
+// The display name used to sort a row in the top-level (non-drilled-in) list.
+// Artists/albums sort by their group name (not the representative entry's
+// own title) so that, e.g., every track by an artist sorts under that
+// artist's name rather than its own song title.
+std::string library_item_display_name(const MediaEntry& entry, int filter) {
+    if (filter == kFilterArtists) {
+        return artist_group_key(entry);
     }
-    const std::string group = series_group_key(entry);
-    return group.empty()
-        ? (entry.title.empty() ? entry.name : entry.title)
-        : media_source_default_title(group);
-}
-
-std::string library_item_display_name(const MediaEntry& entry) {
-    return series_group_key(entry).empty()
-        ? (entry.title.empty() ? entry.name : entry.title)
-        : series_display_name(entry);
+    if (filter == kFilterAlbums) {
+        return media_album_display_name(entry);
+    }
+    return entry.title.empty() ? entry.name : entry.title;
 }
 
 bool library_item_name_less(
     const MediaEntry& left,
-    const MediaEntry& right) {
-    const std::string left_name = library_item_display_name(left);
-    const std::string right_name = library_item_display_name(right);
+    const MediaEntry& right,
+    int filter) {
+    const std::string left_name = library_item_display_name(left, filter);
+    const std::string right_name = library_item_display_name(right, filter);
     if (natural_path_less(left_name, right_name)) {
         return true;
     }
@@ -542,7 +518,7 @@ bool library_item_name_less(
 const char* entry_kind_name(const MediaEntry& entry) {
     switch (entry.kind) {
         case MediaKind::video:
-            return looks_like_episode(entry) ? "TV" : "MOVIE";
+            return "VIDEO";
         case MediaKind::audio:
             return "AUDIO";
         case MediaKind::playlist:
@@ -555,21 +531,19 @@ const char* entry_kind_name(const MediaEntry& entry) {
 const char* filter_name(int filter) {
     switch (filter) {
         case 1:
-            return "CONTINUE WATCHING";
+            return "CONTINUE LISTENING";
         case 2:
             return "RECENTLY PLAYED";
         case 3:
             return "FAVORITES";
         case 4:
-            return "MOVIES";
+            return "ARTISTS";
         case 5:
-            return "TV SHOWS";
+            return "ALBUMS";
         case 6:
-            return "MUSIC";
-        case 7:
             return "PLAYLISTS";
         default:
-            return "ALL MEDIA";
+            return "ALL MUSIC";
     }
 }
 
@@ -584,12 +558,10 @@ bool matches_filter(const MediaEntry& entry, int filter) {
         case 3:
             return entry.favorite;
         case 4:
-            return entry.kind == MediaKind::video && !looks_like_episode(entry);
-        case 5:
-            return looks_like_episode(entry);
-        case 6:
             return entry.kind == MediaKind::audio;
-        case 7:
+        case 5:
+            return entry.kind == MediaKind::audio;
+        case 6:
             return entry.kind == MediaKind::playlist;
         default:
             return true;
@@ -690,8 +662,8 @@ struct LibraryUi::Impl {
     SDL_Thread* import_thread = nullptr;
     std::vector<MediaEntry> entries;
     std::vector<MediaSource> sources;
-    std::string active_series_root;
-    std::string active_season_root;
+    std::string active_artist;
+    std::string active_album_key;
     bool browser_mode = false;
     std::string browser_path;
     std::vector<BrowserEntry> browser_entries;
@@ -779,8 +751,8 @@ struct LibraryUi::Impl {
     mutable int filtered_cache_filter = -1;
     mutable int filtered_cache_sort_mode = -1;
     mutable std::string filtered_cache_query;
-    mutable std::string filtered_cache_series_root;
-    mutable std::string filtered_cache_season_root;
+    mutable std::string filtered_cache_active_artist;
+    mutable std::string filtered_cache_active_album_key;
 
     void load_player_settings() {
         PlayerSettings loaded{};
@@ -1089,45 +1061,59 @@ struct LibraryUi::Impl {
             filtered_cache_filter == filter &&
             filtered_cache_sort_mode == static_cast<int>(sort_mode) &&
             filtered_cache_query == search_query &&
-            filtered_cache_series_root == active_series_root &&
-            filtered_cache_season_root == active_season_root) {
+            filtered_cache_active_artist == active_artist &&
+            filtered_cache_active_album_key == active_album_key) {
             return filtered_cache;
         }
+
+        // Three browsing levels: not drilled in at all (top-level filter
+        // list, with ARTISTS/ALBUMS grouped into one row per group); drilled
+        // into an artist and looking at that artist's albums; drilled all
+        // the way into an album and looking at its tracks (the leaf level).
+        const bool browsing_album_tracks = !active_album_key.empty();
+        const bool browsing_artist_albums =
+            !browsing_album_tracks && !active_artist.empty();
+        const bool browsing_group =
+            browsing_album_tracks || browsing_artist_albums;
 
         filtered_cache.clear();
         filtered_cache.reserve(entries.size());
         for (std::size_t index = 0; index < entries.size(); ++index) {
             const MediaEntry& entry = entries[index];
-            const bool in_series =
-                !active_series_root.empty() &&
-                series_group_key(entry) == active_series_root;
-            const bool in_season =
-                active_season_root.empty() ||
-                media_season_root(entry, active_series_root) ==
-                    active_season_root;
-            if ((active_series_root.empty()
-                     ? matches_filter(entry, filter)
-                     : in_series && in_season) &&
-                media_matches_normalized_query(entry, search_query)) {
+            bool included = false;
+            if (browsing_album_tracks) {
+                included = media_album_key(entry) == active_album_key;
+            } else if (browsing_artist_albums) {
+                included = artist_group_key(entry) == active_artist;
+            } else if (filter == kFilterArtists || filter == kFilterAlbums) {
+                included = entry.kind == MediaKind::audio;
+            } else {
+                included = matches_filter(entry, filter);
+            }
+            if (included && media_matches_normalized_query(entry, search_query)) {
                 filtered_cache.push_back(index);
             }
         }
         sort_media_indices(
             entries,
             filtered_cache,
-            active_series_root.empty() ? sort_mode : LibrarySortMode::name,
-            active_series_root.empty() && (filter == 1 || filter == 2));
-        if (active_series_root.empty()) {
-            std::unordered_set<std::string> seen_series;
-            filtered_cache.erase(
-                std::remove_if(
-                    filtered_cache.begin(),
-                    filtered_cache.end(),
-                    [&](std::size_t index) {
-                        const std::string group = series_group_key(entries[index]);
-                        return !group.empty() && !seen_series.insert(group).second;
-                    }),
-                filtered_cache.end());
+            browsing_group ? LibrarySortMode::name : sort_mode,
+            !browsing_group && (filter == 1 || filter == 2));
+        if (!browsing_group) {
+            if (filter == kFilterArtists || filter == kFilterAlbums) {
+                std::unordered_set<std::string> seen_groups;
+                filtered_cache.erase(
+                    std::remove_if(
+                        filtered_cache.begin(),
+                        filtered_cache.end(),
+                        [&](std::size_t index) {
+                            const std::string key = filter == kFilterArtists
+                                ? artist_group_key(entries[index])
+                                : media_album_key(entries[index]);
+                            return !seen_groups.insert(key).second;
+                        }),
+                    filtered_cache.end());
+            }
             const bool display_name_sort =
                 sort_mode == LibrarySortMode::name ||
                 (sort_mode == LibrarySortMode::smart &&
@@ -1138,30 +1124,51 @@ struct LibraryUi::Impl {
                     filtered_cache.end(),
                     [&](std::size_t left, std::size_t right) {
                         return library_item_name_less(
-                            entries[left], entries[right]);
+                            entries[left], entries[right], filter);
                     });
             }
-        } else if (active_season_root.empty()) {
-            std::unordered_set<std::string> seen_seasons;
+        } else if (browsing_artist_albums) {
+            std::unordered_set<std::string> seen_albums;
             filtered_cache.erase(
                 std::remove_if(
                     filtered_cache.begin(),
                     filtered_cache.end(),
                     [&](std::size_t index) {
-                        const std::string season =
-                            media_season_root(
-                                entries[index], active_series_root);
-                        return !season.empty() &&
-                            !seen_seasons.insert(season).second;
+                        return !seen_albums.insert(
+                            media_album_key(entries[index])).second;
                     }),
                 filtered_cache.end());
+        } else {
+            // Leaf level: one row per track. Real albums have a meaningful
+            // track order, so sort by tag order first; fall back to a
+            // natural name sort when every track_number is 0 (untagged).
+            std::stable_sort(
+                filtered_cache.begin(),
+                filtered_cache.end(),
+                [&](std::size_t left, std::size_t right) {
+                    const MediaEntry& left_entry = entries[left];
+                    const MediaEntry& right_entry = entries[right];
+                    if (left_entry.track_number != right_entry.track_number) {
+                        return left_entry.track_number <
+                            right_entry.track_number;
+                    }
+                    const std::string left_name = display_name(left_entry);
+                    const std::string right_name = display_name(right_entry);
+                    if (natural_path_less(left_name, right_name)) {
+                        return true;
+                    }
+                    if (natural_path_less(right_name, left_name)) {
+                        return false;
+                    }
+                    return natural_path_less(left_entry.path, right_entry.path);
+                });
         }
         filtered_cache_generation = published_generation;
         filtered_cache_filter = filter;
         filtered_cache_sort_mode = static_cast<int>(sort_mode);
         filtered_cache_query = search_query;
-        filtered_cache_series_root = active_series_root;
-        filtered_cache_season_root = active_season_root;
+        filtered_cache_active_artist = active_artist;
+        filtered_cache_active_album_key = active_album_key;
         return filtered_cache;
     }
 
@@ -2277,7 +2284,7 @@ struct LibraryUi::Impl {
         if (selected >= 0 && selected < static_cast<int>(filtered.size())) {
             const MediaEntry& entry =
                 entries[filtered[static_cast<std::size_t>(selected)]];
-            const std::string group = series_group_key(entry);
+            const std::string group = parent_path(entry.path);
             for (const MediaSource& source : sources) {
                 const bool matches =
                     (source.kind == MediaSourceKind::movie_file &&
@@ -2329,8 +2336,8 @@ struct LibraryUi::Impl {
                            source.path == target.path;
                 }),
             sources.end());
-        active_series_root.clear();
-        active_season_root.clear();
+        active_artist.clear();
+        active_album_key.clear();
         SDL_UnlockMutex(mutex);
         if (!persist_sources()) {
             SDL_LockMutex(mutex);
@@ -2555,14 +2562,18 @@ struct LibraryUi::Impl {
         const std::vector<std::size_t>& previous_filtered =
             filtered_indices_locked();
         std::string previous_path;
-        std::string previous_series;
+        std::string previous_group;
         if (selected >= 0 &&
             selected < static_cast<int>(previous_filtered.size())) {
             const MediaEntry& previous_entry =
                 entries[previous_filtered[static_cast<std::size_t>(selected)]];
             previous_path = previous_entry.path;
-            if (active_series_root.empty()) {
-                previous_series = series_group_key(previous_entry);
+            if (active_artist.empty() && active_album_key.empty()) {
+                if (filter == kFilterArtists) {
+                    previous_group = artist_group_key(previous_entry);
+                } else if (filter == kFilterAlbums) {
+                    previous_group = media_album_key(previous_entry);
+                }
             }
         }
         sort_mode = next_library_sort_mode(sort_mode);
@@ -2572,9 +2583,13 @@ struct LibraryUi::Impl {
         bool restored = false;
         for (std::size_t position = 0; position < sorted.size(); ++position) {
             const MediaEntry& candidate = entries[sorted[position]];
-            if ((!previous_series.empty() &&
-                 series_group_key(candidate) == previous_series) ||
-                (previous_series.empty() &&
+            const std::string candidate_group = previous_group.empty()
+                ? std::string{}
+                : (filter == kFilterArtists
+                       ? artist_group_key(candidate)
+                       : media_album_key(candidate));
+            if ((!previous_group.empty() && candidate_group == previous_group) ||
+                (previous_group.empty() &&
                  candidate.path == previous_path)) {
                 selected = static_cast<int>(position);
                 first_visible = std::clamp(
@@ -3062,25 +3077,20 @@ struct LibraryUi::Impl {
         }
         retain_configured_media(final_entries, source_snapshot);
         annotate_media_sources(final_entries, source_snapshot);
-        std::unordered_set<std::string> series_groups;
-        std::size_t series_episodes = 0;
-        std::size_t explicit_movies = 0;
+        std::unordered_set<std::string> artist_groups;
+        std::unordered_set<std::string> album_groups;
         for (const MediaEntry& entry : final_entries) {
-            const std::string group = series_group_key(entry);
-            if (!group.empty()) {
-                series_groups.insert(group);
-                ++series_episodes;
+            if (entry.kind != MediaKind::audio) {
+                continue;
             }
-            if (entry.explicit_movie) {
-                ++explicit_movies;
-            }
+            artist_groups.insert(artist_group_key(entry));
+            album_groups.insert(media_album_key(entry));
         }
         diagnostics_log(
             DiagnosticLevel::info,
-            "library-grouping shows=%zu episodes=%zu explicit_movies=%zu total=%zu",
-            series_groups.size(),
-            series_episodes,
-            explicit_movies,
+            "library-grouping artists=%zu albums=%zu total=%zu",
+            artist_groups.size(),
+            album_groups.size(),
             final_entries.size());
         self->publish(std::move(final_entries));
         diagnostics_log(
@@ -3641,24 +3651,30 @@ struct LibraryUi::Impl {
             return;
         }
 
-        std::string series_root;
-        std::string season_root;
+        std::string artist_root;
+        std::string album_key_root;
+        std::string album_display_root;
         SDL_LockMutex(mutex);
-        series_root = active_series_root;
-        season_root = active_season_root;
+        artist_root = active_artist;
+        album_key_root = active_album_key;
+        if (!album_key_root.empty()) {
+            for (const MediaEntry& entry : entries) {
+                if (media_album_key(entry) == album_key_root) {
+                    album_display_root = media_album_display_name(entry);
+                    break;
+                }
+            }
+        }
         SDL_UnlockMutex(mutex);
         title_label = make_label(
             renderer,
             title_font,
-            !season_root.empty()
-                ? media_source_default_title(season_root)
-                : (series_root.empty()
-                       ? "Library"
-                       : media_source_default_title(series_root)),
+            !album_key_root.empty()
+                ? album_display_root
+                : (artist_root.empty() ? "Library" : artist_root),
             white);
         std::vector<MediaEntry> visible;
-        std::vector<int> visible_episode_counts;
-        std::vector<std::string> visible_season_roots;
+        std::vector<int> visible_group_counts;
         bool is_scanning = false;
         bool library_has_entries = false;
         bool is_search_editing = false;
@@ -3693,32 +3709,32 @@ struct LibraryUi::Impl {
             const MediaEntry& entry =
                 entries[filtered[static_cast<std::size_t>(index)]];
             visible.push_back(entry);
-            const std::string group = series_group_key(entry);
-            const std::string season =
-                series_root.empty()
-                    ? std::string{}
-                    : media_season_root(entry, series_root);
-            int episode_count = 0;
-            if (active_series_root.empty() && !group.empty()) {
-                episode_count = static_cast<int>(std::count_if(
+            // Only the top-level ARTISTS/ALBUMS rows and the artist-drilled
+            // album rows need a group size; every other row (leaf tracks,
+            // and every other filter) leaves this at 0 and is not shown.
+            int group_count = 0;
+            if (active_artist.empty() && active_album_key.empty() &&
+                filter == kFilterArtists) {
+                const std::string key = artist_group_key(entry);
+                std::unordered_set<std::string> albums_for_artist;
+                for (const MediaEntry& candidate : entries) {
+                    if (candidate.kind == MediaKind::audio &&
+                        artist_group_key(candidate) == key) {
+                        albums_for_artist.insert(media_album_key(candidate));
+                    }
+                }
+                group_count = static_cast<int>(albums_for_artist.size());
+            } else if (active_album_key.empty() &&
+                       (filter == kFilterAlbums || !active_artist.empty())) {
+                const std::string key = media_album_key(entry);
+                group_count = static_cast<int>(std::count_if(
                     entries.begin(),
                     entries.end(),
                     [&](const MediaEntry& candidate) {
-                        return series_group_key(candidate) == group;
-                    }));
-            } else if (!series_root.empty() && season_root.empty() &&
-                       !season.empty()) {
-                episode_count = static_cast<int>(std::count_if(
-                    entries.begin(),
-                    entries.end(),
-                    [&](const MediaEntry& candidate) {
-                        return series_group_key(candidate) == series_root &&
-                            media_season_root(candidate, series_root) ==
-                                season;
+                        return media_album_key(candidate) == key;
                     }));
             }
-            visible_episode_counts.push_back(episode_count);
-            visible_season_roots.push_back(season);
+            visible_group_counts.push_back(group_count);
         }
         is_scanning = scanning;
         library_has_entries = !entries.empty();
@@ -3748,17 +3764,18 @@ struct LibraryUi::Impl {
         rendered_overlay_selected = 0;
         SDL_UnlockMutex(mutex);
 
+        const bool browsing_group = !artist_root.empty() || !album_key_root.empty();
         if (total == 0 && !library_has_entries) {
             add_footer_hint(FooterGlyph::cross, "", "Add Media");
             add_footer_hint(FooterGlyph::options, "", "Menu");
         } else if (total == 0) {
-            if (!active_series_root.empty()) {
+            if (browsing_group) {
                 add_footer_hint(FooterGlyph::circle, "", "Back");
             }
             add_footer_hint(FooterGlyph::dpad, "", "Change Category");
             add_footer_hint(FooterGlyph::touchpad, "", "Add Media");
             add_footer_hint(FooterGlyph::options, "", "Menu");
-        } else if (series_root.empty()) {
+        } else if (!browsing_group) {
             add_footer_hint(FooterGlyph::cross, "", "Play");
             add_footer_hint(FooterGlyph::triangle, "", "Remove");
             add_footer_hint(
@@ -3776,7 +3793,7 @@ struct LibraryUi::Impl {
             add_footer_hint(
                 FooterGlyph::cross,
                 "",
-                season_root.empty() ? "Open / Play" : "Play Episode");
+                album_key_root.empty() ? "Open / Play" : "Play Track");
             add_footer_hint(FooterGlyph::circle, "", "Back");
             add_footer_hint(FooterGlyph::triangle, "", "Remove");
             add_footer_hint(
@@ -3790,16 +3807,14 @@ struct LibraryUi::Impl {
         update_artwork(active_media_path, active_generation);
 
         std::string status =
-            (active_series_root.empty()
+            (!browsing_group
                  ? std::string(filter_name(active_filter))
-                 : (season_root.empty()
-                        ? "SEASONS & EPISODES"
-                        : "EPISODES")) +
+                 : (album_key_root.empty() ? "ALBUMS" : "TRACKS")) +
             "  |  " +
             std::to_string(total) + " ITEMS  |  SORT: " +
-            (active_series_root.empty()
+            (!browsing_group
                  ? library_sort_mode_name(active_sort_mode)
-                 : "EPISODE ORDER");
+                 : "TRACK ORDER");
         if (!active_query.empty()) {
             status += "  |  SEARCH: " + active_query;
         }
@@ -3839,14 +3854,14 @@ struct LibraryUi::Impl {
             } else if (first_run) {
                 empty_title = "Your library is empty";
                 empty_help =
-                    "Press Cross to choose a movie or TV-show folder.";
+                    "Press Cross to choose a music folder or file.";
             } else if (!active_query.empty()) {
                 empty_title = "No search results";
                 empty_help =
                     "Open Options to clear the search, or change category.";
-            } else if (!active_series_root.empty()) {
-                empty_title = "No episodes found";
-                empty_help = "Press Circle to return to the library.";
+            } else if (browsing_group) {
+                empty_title = "No tracks found";
+                empty_help = "Press Circle to go back.";
             } else {
                 empty_title = "No items in this category";
                 empty_help =
@@ -3882,31 +3897,28 @@ struct LibraryUi::Impl {
              visible_index < visible.size();
              ++visible_index) {
             const MediaEntry& entry = visible[visible_index];
-            const std::string group = series_group_key(entry);
-            const std::string& season =
-                visible_season_roots[visible_index];
+            const int group_count = visible_group_counts[visible_index];
+            const bool is_artist_row =
+                artist_root.empty() && album_key_root.empty() &&
+                active_filter == kFilterArtists;
+            const bool is_album_row =
+                album_key_root.empty() &&
+                (active_filter == kFilterAlbums || !artist_root.empty());
             std::string text;
-            if (active_series_root.empty() && !group.empty()) {
-                text = "TV SHOW   " + series_display_name(entry) + "   -   " +
-                    std::to_string(visible_episode_counts[visible_index]) +
-                    " EPISODES";
-            } else if (!series_root.empty() && season_root.empty() &&
-                       !season.empty()) {
-                text = "SEASON    " + media_source_default_title(season) +
-                    "   -   " +
-                    std::to_string(visible_episode_counts[visible_index]) +
-                    " EPISODES";
-            } else if (!active_series_root.empty()) {
-                text = "EPISODE   " + display_name(entry);
+            if (is_artist_row) {
+                text = "ARTIST   " + artist_group_key(entry) + "   -   " +
+                    std::to_string(group_count) + " ALBUMS";
+            } else if (is_album_row) {
+                text = "ALBUM   " + media_album_display_name(entry) +
+                    "   -   " + std::to_string(group_count) + " TRACKS";
+            } else if (!album_key_root.empty()) {
+                text = "TRACK   " + display_name(entry);
             } else {
                 text = std::string(entry_kind_name(entry)) + "   " +
                     display_name(entry);
             }
             const std::string details = row_details(entry);
-            if (!details.empty() &&
-                (active_series_root.empty()
-                     ? group.empty()
-                     : !season_root.empty() || season.empty())) {
+            if (!details.empty() && !is_artist_row && !is_album_row) {
                 text += "   -   " + details;
             }
             row_labels.push_back(make_label(renderer, row_font, text, white));
@@ -4468,8 +4480,8 @@ LibraryAction LibraryUi::handle_event(const SDL_Event& event, std::string& selec
     int delta = 0;
     bool play = false;
     bool play_queue = false;
-    bool leave_series = false;
-    bool leave_season = false;
+    bool leave_artist = false;
+    bool leave_album = false;
     bool remove_source = false;
     bool begin_search = false;
     bool clear_search = false;
@@ -4487,9 +4499,9 @@ LibraryAction LibraryUi::handle_event(const SDL_Event& event, std::string& selec
                 break;
             case SDL_CONTROLLER_BUTTON_B:
                 SDL_LockMutex(impl_->mutex);
-                leave_season = !impl_->active_season_root.empty();
-                leave_series =
-                    !leave_season && !impl_->active_series_root.empty();
+                leave_album = !impl_->active_album_key.empty();
+                leave_artist =
+                    !leave_album && !impl_->active_artist.empty();
                 SDL_UnlockMutex(impl_->mutex);
                 break;
             case SDL_CONTROLLER_BUTTON_X:
@@ -4599,13 +4611,13 @@ LibraryAction LibraryUi::handle_event(const SDL_Event& event, std::string& selec
     if (begin_search) {
         impl_->begin_search();
     }
-    if (leave_season || leave_series) {
+    if (leave_album || leave_artist) {
         SDL_LockMutex(impl_->mutex);
-        if (leave_season) {
-            impl_->active_season_root.clear();
+        if (leave_album) {
+            impl_->active_album_key.clear();
         } else {
-            impl_->active_series_root.clear();
-            impl_->active_season_root.clear();
+            impl_->active_artist.clear();
+            impl_->active_album_key.clear();
         }
         impl_->selected = 0;
         impl_->first_visible = 0;
@@ -4637,26 +4649,27 @@ LibraryAction LibraryUi::handle_event(const SDL_Event& event, std::string& selec
             impl_->selected < static_cast<int>(filtered.size())) {
             const MediaEntry& entry = impl_->entries[
                 filtered[static_cast<std::size_t>(impl_->selected)]];
-            const std::string group = series_group_key(entry);
-            if (play && impl_->active_series_root.empty() && !group.empty()) {
-                impl_->active_series_root = group;
-                impl_->active_season_root.clear();
+            const std::string artist_key = artist_group_key(entry);
+            const bool entering_artist =
+                play && impl_->filter == kFilterArtists &&
+                impl_->active_artist.empty() &&
+                impl_->active_album_key.empty() && !artist_key.empty();
+            const bool entering_album =
+                play && impl_->active_album_key.empty() &&
+                ((impl_->filter == kFilterArtists &&
+                  !impl_->active_artist.empty()) ||
+                 impl_->filter == kFilterAlbums);
+            if (entering_artist) {
+                impl_->active_artist = artist_key;
+                impl_->active_album_key.clear();
                 impl_->selected = 0;
                 impl_->first_visible = 0;
                 ++impl_->published_generation;
-            } else if (
-                play && !impl_->active_series_root.empty() &&
-                impl_->active_season_root.empty()) {
-                const std::string season = media_season_root(
-                    entry, impl_->active_series_root);
-                if (!season.empty()) {
-                    impl_->active_season_root = season;
-                    impl_->selected = 0;
-                    impl_->first_visible = 0;
-                    ++impl_->published_generation;
-                } else {
-                    selected_path = entry.path;
-                }
+            } else if (entering_album) {
+                impl_->active_album_key = media_album_key(entry);
+                impl_->selected = 0;
+                impl_->first_visible = 0;
+                ++impl_->published_generation;
             } else {
                 selected_path = entry.path;
             }
