@@ -550,7 +550,7 @@ const char* filter_name(int filter) {
 bool matches_filter(const MediaEntry& entry, int filter) {
     switch (filter) {
         case 1:
-            return entry.kind == MediaKind::video && !entry.completed &&
+            return entry.kind == MediaKind::audio && !entry.completed &&
                    entry.resume_position_ms >= 10000 && entry.resume_duration_ms > 0 &&
                    entry.resume_position_ms < entry.resume_duration_ms;
         case 2:
@@ -2296,18 +2296,18 @@ struct LibraryUi::Impl {
         if (selected >= 0 && selected < static_cast<int>(filtered.size())) {
             const MediaEntry& entry =
                 entries[filtered[static_cast<std::size_t>(selected)]];
-            // Only a video file can belong to a folder source. Audio
-            // tracks and group rows get an empty key, so Remove keeps
-            // showing the "not a configured library source" notice.
-            const std::string group = entry.kind == MediaKind::video
-                ? parent_path(entry.path)
-                : std::string{};
+            // A single-file source matches on exact path. A folder source
+            // matches when the entry's path is within the source's folder
+            // (not just a direct child of it), so tracks in subfolders of a
+            // configured folder source can still be removed with it.
+            const std::string entry_path = normalize_media_source_path(entry.path);
             for (const MediaSource& source : sources) {
+                const std::string source_path = normalize_media_source_path(source.path);
                 const bool matches =
                     (source.kind == MediaSourceKind::movie_file &&
-                     source.path == entry.path) ||
+                     source_path == entry_path) ||
                     (source.kind == MediaSourceKind::tv_folder &&
-                     source.path == group);
+                     path_is_within(entry_path, source_path));
                 if (matches) {
                     target = source;
                     display = source.title.empty()
@@ -3619,7 +3619,7 @@ struct LibraryUi::Impl {
                     add_footer_hint(FooterGlyph::circle, "", "Back");
                     break;
                 case LibraryOverlay::about:
-                    title = "About BFplayer";
+                    title = "About Hi-res AMP";
                     subtitle = "Private test software for your jailbroken PS5";
                     rows = {
                         "Standalone native PS5 payload",

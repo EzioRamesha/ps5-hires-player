@@ -52,6 +52,8 @@ bool hex_decode(std::string_view encoded, std::string& value) {
     return value.find('\0') == std::string::npos;
 }
 
+} // namespace
+
 bool path_is_within(const std::string& path, const std::string& root) {
     if (path == root) {
         return true;
@@ -60,8 +62,6 @@ bool path_is_within(const std::string& path, const std::string& root) {
            path.compare(0, root.size(), root) == 0 &&
            (root == "/" || path[root.size()] == '/');
 }
-
-} // namespace
 
 std::string normalize_media_source_path(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
@@ -175,10 +175,11 @@ void annotate_media_sources(
     // so the (video-only) library UI could group TV-folder sources into
     // series. Task 3 removed those fields from MediaEntry (they have no
     // music-player equivalent), which makes this function a no-op for now.
-    // Plan 1b (UI rework) should decide whether MediaSourceKind::tv_folder
-    // and this annotation step still have a purpose for a music player, or
-    // should be deleted outright along with the rest of the TV-folder source
-    // model.
+    // Decision recorded at the close of Plan 1b (UI rework): a later cleanup
+    // pass should delete this no-op and its call sites outright.
+    // MediaSourceKind::tv_folder/movie_file themselves stay (they encode
+    // directory-vs-file, which media_entry_is_covered_by_sources depends on)
+    // but deserve renaming to folder/file.
     (void)entries;
     (void)sources;
 }

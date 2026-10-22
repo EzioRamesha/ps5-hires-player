@@ -4305,6 +4305,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     boot_stage("sdl-init-complete");
+    // Linear scaling for every texture (now-playing artwork, video frames):
+    // set once here so quality doesn't depend on whether a video happened to
+    // play earlier in the process.
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
     Kit_SetHint(KIT_HINT_THREAD_COUNT, kVideoDecoderThreads);
     apply_playback_buffer_policy(playback_buffer_policy(false));
     boot_stage("kitchensink-init-begin");

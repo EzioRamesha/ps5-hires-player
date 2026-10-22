@@ -31,10 +31,14 @@ int main() {
 
     // annotate_media_sources used to tag entries with series_root/series_title/
     // explicit_movie, which task 3 removed from MediaEntry (video-only fields
-    // with no music-player equivalent); it is now a no-op pending a decision
-    // in Plan 1b on whether the TV-folder source model still has a purpose.
-    // The checks below only exercise the parts of this file unrelated to that
-    // annotation: serialization, coverage checks, and retention.
+    // with no music-player equivalent); it is now a no-op. The decision
+    // recorded at the close of Plan 1b: a later cleanup pass should delete
+    // this no-op and its call sites outright, while MediaSourceKind::
+    // tv_folder/movie_file stay (they encode directory-vs-file, which
+    // media_entry_is_covered_by_sources depends on) but deserve renaming to
+    // folder/file. The checks below only exercise the parts of this file
+    // unrelated to that annotation: serialization, coverage checks, and
+    // retention.
     std::vector<MediaEntry> entries{
         {"/mnt/usb0/One Pace/Episode 1.mkv", "Episode 1.mkv", MediaKind::video},
         {"/mnt/usb0/Movie.mkv", "Movie.mkv", MediaKind::video},
