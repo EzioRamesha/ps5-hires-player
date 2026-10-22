@@ -224,6 +224,37 @@ int main() {
     check(!database.finish_scan(false), "aborted scan reports no commit");
     check(database.list_media().size() == 1, "aborted scan retains last index");
 
+    check(database.begin_scan("/music"), "music scan begins");
+    bfplayer::MediaEntry audio_entry{
+        "/music/Artist/Album/01 Track.flac", "01 Track.flac", bfplayer::MediaKind::audio};
+    check(database.upsert_media(audio_entry), "audio row upserts");
+    check(database.finish_scan(true), "music scan commits");
+    audio_entry.artist = "Test Artist";
+    audio_entry.album = "Test Album";
+    audio_entry.album_artist = "Test Artist";
+    audio_entry.track_number = 1;
+    audio_entry.disc_number = 1;
+    audio_entry.genre = "Test Genre";
+    audio_entry.year = 2026;
+    check(database.update_media_metadata(audio_entry), "music metadata update saves");
+    const auto music_entries = database.list_media();
+    bfplayer::MediaEntry read_back{};
+    bool music_row_found = false;
+    for (const auto& entry : music_entries) {
+        if (entry.path == "/music/Artist/Album/01 Track.flac") {
+            read_back = entry;
+            music_row_found = true;
+        }
+    }
+    check(music_row_found, "music row appears in listing");
+    check(read_back.artist == "Test Artist", "artist round-trips through the database");
+    check(read_back.album == "Test Album", "album round-trips through the database");
+    check(read_back.album_artist == "Test Artist", "album_artist round-trips through the database");
+    check(read_back.track_number == 1, "track_number round-trips through the database");
+    check(read_back.disc_number == 1, "disc_number round-trips through the database");
+    check(read_back.genre == "Test Genre", "genre round-trips through the database");
+    check(read_back.year == 2026, "year round-trips through the database");
+
     database.close();
     std::filesystem::remove(database_path, filesystem_error);
     std::filesystem::remove(database_path.string() + "-wal", filesystem_error);

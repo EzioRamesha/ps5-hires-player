@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS media (
     container TEXT NOT NULL DEFAULT '',
     video_codec TEXT NOT NULL DEFAULT '',
     audio_codec TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT '',
+    album TEXT NOT NULL DEFAULT '',
+    album_artist TEXT NOT NULL DEFAULT '',
+    track_number INTEGER NOT NULL DEFAULT 0,
+    disc_number INTEGER NOT NULL DEFAULT 1,
+    genre TEXT NOT NULL DEFAULT '',
+    year INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',
     last_seen_generation INTEGER NOT NULL,
     FOREIGN KEY(root) REFERENCES roots(path) ON DELETE CASCADE
@@ -259,6 +266,13 @@ bool LibraryDatabase::migrate_schema() {
              "video_codec TEXT NOT NULL DEFAULT ''"},
             {"media", "audio_codec",
              "audio_codec TEXT NOT NULL DEFAULT ''"},
+            {"media", "artist", "artist TEXT NOT NULL DEFAULT ''"},
+            {"media", "album", "album TEXT NOT NULL DEFAULT ''"},
+            {"media", "album_artist", "album_artist TEXT NOT NULL DEFAULT ''"},
+            {"media", "track_number", "track_number INTEGER NOT NULL DEFAULT 0"},
+            {"media", "disc_number", "disc_number INTEGER NOT NULL DEFAULT 1"},
+            {"media", "genre", "genre TEXT NOT NULL DEFAULT ''"},
+            {"media", "year", "year INTEGER NOT NULL DEFAULT 0"},
             {"media", "title", "title TEXT NOT NULL DEFAULT ''"},
             {"media", "last_seen_generation",
              "last_seen_generation INTEGER NOT NULL DEFAULT 0"},
@@ -389,6 +403,20 @@ bool LibraryDatabase::begin_scan(const std::string& root) {
             "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.video_codec END,"
             "audio_codec=CASE WHEN media.size<>excluded.size OR "
             "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.audio_codec END,"
+            "artist=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.artist END,"
+            "album=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.album END,"
+            "album_artist=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.album_artist END,"
+            "track_number=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN 0 ELSE media.track_number END,"
+            "disc_number=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN 1 ELSE media.disc_number END,"
+            "genre=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.genre END,"
+            "year=CASE WHEN media.size<>excluded.size OR "
+            "media.modified_unix<>excluded.modified_unix THEN 0 ELSE media.year END,"
             "title=CASE WHEN media.size<>excluded.size OR "
             "media.modified_unix<>excluded.modified_unix THEN '' ELSE media.title END,"
             "size=excluded.size,modified_unix=excluded.modified_unix,"
@@ -462,7 +490,9 @@ bool LibraryDatabase::update_media_metadata(const MediaEntry& entry) {
     const bool success = prepare(
                              &statement,
                              "UPDATE media SET duration_ms=?2,width=?3,height=?4,"
-                             "container=?5,video_codec=?6,audio_codec=?7,title=?8 "
+                             "container=?5,video_codec=?6,audio_codec=?7,title=?8,"
+                             "artist=?9,album=?10,album_artist=?11,track_number=?12,"
+                             "disc_number=?13,genre=?14,year=?15 "
                              "WHERE path=?1;") &&
                          bind_text(statement, 1, entry.path) &&
                          sqlite3_bind_int64(statement, 2, entry.duration_ms) == SQLITE_OK &&
@@ -472,6 +502,13 @@ bool LibraryDatabase::update_media_metadata(const MediaEntry& entry) {
                          bind_text(statement, 6, entry.video_codec) &&
                          bind_text(statement, 7, entry.audio_codec) &&
                          bind_text(statement, 8, entry.title) &&
+                         bind_text(statement, 9, entry.artist) &&
+                         bind_text(statement, 10, entry.album) &&
+                         bind_text(statement, 11, entry.album_artist) &&
+                         sqlite3_bind_int(statement, 12, entry.track_number) == SQLITE_OK &&
+                         sqlite3_bind_int(statement, 13, entry.disc_number) == SQLITE_OK &&
+                         bind_text(statement, 14, entry.genre) &&
+                         sqlite3_bind_int(statement, 15, entry.year) == SQLITE_OK &&
                          sqlite3_step(statement) == SQLITE_DONE &&
                          sqlite3_changes(database_) == 1;
     if (!success) {
@@ -765,7 +802,9 @@ std::vector<MediaEntry> LibraryDatabase::list_media(std::size_t limit, std::size
     if (!database_ || !prepare(
             &statement,
             "SELECT m.path,m.name,m.kind,m.size,m.modified_unix,m.duration_ms,"
-            "m.width,m.height,m.container,m.video_codec,m.audio_codec,m.title,"
+            "m.width,m.height,m.container,m.video_codec,m.audio_codec,"
+            "m.artist,m.album,m.album_artist,m.track_number,m.disc_number,"
+            "m.genre,m.year,m.title,"
             "COALESCE(r.position_ms,0),COALESCE(r.duration_ms,0),"
             "COALESCE(r.last_played_unix,0),COALESCE(r.completed,0),"
             "CASE WHEN f.media_path IS NULL THEN 0 ELSE 1 END "
@@ -803,17 +842,24 @@ std::vector<MediaEntry> LibraryDatabase::list_media(std::size_t limit, std::size
         if (!read_text(statement, 8, entry.container) ||
             !read_text(statement, 9, entry.video_codec) ||
             !read_text(statement, 10, entry.audio_codec) ||
-            !read_text(statement, 11, entry.title)) {
+            !read_text(statement, 11, entry.artist) ||
+            !read_text(statement, 12, entry.album) ||
+            !read_text(statement, 13, entry.album_artist) ||
+            !read_text(statement, 16, entry.genre) ||
+            !read_text(statement, 18, entry.title)) {
             error_ = "list_media: invalid metadata text";
             entries.clear();
             step = SQLITE_CORRUPT;
             break;
         }
-        entry.resume_position_ms = sqlite3_column_int64(statement, 12);
-        entry.resume_duration_ms = sqlite3_column_int64(statement, 13);
-        entry.last_played_unix = sqlite3_column_int64(statement, 14);
-        entry.completed = sqlite3_column_int(statement, 15) != 0;
-        entry.favorite = sqlite3_column_int(statement, 16) != 0;
+        entry.track_number = sqlite3_column_int(statement, 14);
+        entry.disc_number = sqlite3_column_int(statement, 15);
+        entry.year = sqlite3_column_int(statement, 17);
+        entry.resume_position_ms = sqlite3_column_int64(statement, 19);
+        entry.resume_duration_ms = sqlite3_column_int64(statement, 20);
+        entry.last_played_unix = sqlite3_column_int64(statement, 21);
+        entry.completed = sqlite3_column_int(statement, 22) != 0;
+        entry.favorite = sqlite3_column_int(statement, 23) != 0;
         entries.push_back(std::move(entry));
     }
     if (step != SQLITE_DONE && step != SQLITE_CORRUPT) {

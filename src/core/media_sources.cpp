@@ -171,34 +171,15 @@ std::vector<MediaSource> parse_media_sources(const std::string& encoded) {
 void annotate_media_sources(
     std::vector<MediaEntry>& entries,
     const std::vector<MediaSource>& sources) {
-    for (MediaEntry& entry : entries) {
-        entry.series_root.clear();
-        entry.series_title.clear();
-        entry.explicit_movie = false;
-        const std::string normalized_path = normalize_media_source_path(entry.path);
-        for (const MediaSource& source : sources) {
-            const std::string source_path = normalize_media_source_path(source.path);
-            if (source.kind == MediaSourceKind::movie_file) {
-                if (normalized_path == source_path) {
-                    entry.explicit_movie = true;
-                    entry.series_root.clear();
-                    entry.series_title.clear();
-                    break;
-                }
-                continue;
-            }
-            if (path_is_within(normalized_path, source_path)) {
-                // Prefer the most specific selected TV folder.
-                if (entry.series_root.empty() ||
-                    source_path.size() > entry.series_root.size()) {
-                    entry.series_root = source_path;
-                    entry.series_title = source.title.empty()
-                        ? media_source_default_title(source_path)
-                        : source.title;
-                }
-            }
-        }
-    }
+    // This used to tag each entry with series_root/series_title/explicit_movie
+    // so the (video-only) library UI could group TV-folder sources into
+    // series. Task 3 removed those fields from MediaEntry (they have no
+    // music-player equivalent), which makes this function a no-op for now.
+    // Task 5 (album grouping) should decide whether MediaSourceKind::tv_folder
+    // and this annotation step still have a purpose, or should be deleted
+    // along with the rest of the TV-folder source model.
+    (void)entries;
+    (void)sources;
 }
 
 bool media_entry_is_covered_by_sources(

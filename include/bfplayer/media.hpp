@@ -25,17 +25,19 @@ struct MediaEntry {
     std::string container;
     std::string video_codec;
     std::string audio_codec;
+    std::string artist;
+    std::string album;
+    std::string album_artist;  // falls back to `artist` when a file has no explicit album artist
+    int track_number = 0;
+    int disc_number = 1;
+    std::string genre;
+    int year = 0;
     std::string title;
     std::int64_t resume_position_ms = 0;
     std::int64_t resume_duration_ms = 0;
     std::int64_t last_played_unix = 0;
     bool completed = false;
     bool favorite = false;
-    // Runtime library-source annotations. They are derived from the persisted
-    // source list and intentionally are not stored in the media cache.
-    std::string series_root;
-    std::string series_title;
-    bool explicit_movie = false;
 };
 
 } // namespace bfplayer
