@@ -161,6 +161,7 @@ try {
     }
     $cSources = @(
         'src\playback\kitchensink_audio_clock.c',
+        'src\playback\video_stubs.c',
         'vendor\SDL_kitchensink\src\kiterror.c',
         'vendor\SDL_kitchensink\src\kitformat.c',
         'vendor\SDL_kitchensink\src\kitlib.c',
