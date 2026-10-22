@@ -10,7 +10,6 @@ add_library(bfplayer_core STATIC
     src/core/bulk_import.cpp
     src/core/diagnostics.cpp
     src/core/dlna_protocol.cpp
-    src/core/hdr_tonemap.cpp
     src/core/library_scanner.cpp
     src/core/library_view.cpp
     src/core/list_navigation.cpp
@@ -20,9 +19,6 @@ add_library(bfplayer_core STATIC
     src/core/remote_control.cpp
     src/core/safe_read_file.cpp
     src/core/source_uri.cpp
-    src/core/subtitle_browser.cpp
-    src/core/subtitle_provider.cpp
-    src/core/video_layout.cpp
 )
 target_include_directories(bfplayer_core PUBLIC include)
 
@@ -53,19 +49,6 @@ if(BUILD_TESTING)
     target_link_libraries(bulk_import_tests PRIVATE bfplayer_core)
     add_test(NAME bulk_import_tests COMMAND bulk_import_tests)
 
-    add_executable(video_layout_tests tests/video_layout_tests.cpp)
-    target_link_libraries(video_layout_tests PRIVATE bfplayer_core)
-    add_test(NAME video_layout_tests COMMAND video_layout_tests)
-
-    add_executable(hdr_tonemap_tests tests/hdr_tonemap_tests.cpp)
-    target_link_libraries(hdr_tonemap_tests PRIVATE bfplayer_core)
-    if(MSVC)
-        target_compile_options(hdr_tonemap_tests PRIVATE /UNDEBUG)
-    else()
-        target_compile_options(hdr_tonemap_tests PRIVATE -UNDEBUG)
-    endif()
-    add_test(NAME hdr_tonemap_tests COMMAND hdr_tonemap_tests)
-
     add_executable(library_view_tests tests/library_view_tests.cpp)
     target_link_libraries(library_view_tests PRIVATE bfplayer_core)
     add_test(NAME library_view_tests COMMAND library_view_tests)
@@ -85,14 +68,6 @@ if(BUILD_TESTING)
     add_executable(dlna_protocol_tests tests/dlna_protocol_tests.cpp)
     target_link_libraries(dlna_protocol_tests PRIVATE bfplayer_core)
     add_test(NAME dlna_protocol_tests COMMAND dlna_protocol_tests)
-
-    add_executable(subtitle_provider_tests tests/subtitle_provider_tests.cpp)
-    target_link_libraries(subtitle_provider_tests PRIVATE bfplayer_core)
-    add_test(NAME subtitle_provider_tests COMMAND subtitle_provider_tests)
-
-    add_executable(subtitle_browser_tests tests/subtitle_browser_tests.cpp)
-    target_link_libraries(subtitle_browser_tests PRIVATE bfplayer_core)
-    add_test(NAME subtitle_browser_tests COMMAND subtitle_browser_tests)
 
     add_executable(list_navigation_tests tests/list_navigation_tests.cpp)
     target_link_libraries(list_navigation_tests PRIVATE bfplayer_core)
