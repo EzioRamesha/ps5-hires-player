@@ -112,11 +112,11 @@ exact package layout.
 | Circle | Back out of artist/album browsing; no action at the library root |
 | Square | Change audio track |
 | Triangle | Remove the selected source (press twice) |
-| D-pad Left/Right | Change library category |
-| D-pad Up/Down | Move through the list |
+| D-pad Left/Right | Change library category; short seek during playback |
+| D-pad Up/Down | Move through the list; long seek during playback |
 | L1/R1 | Previous or next page/chapter |
-| L3 | Add or remove favorite |
-| R3 | Change sort mode |
+| L3 | Add or remove favorite; volume down during playback |
+| R3 | Change sort mode; volume up during playback |
 | Touchpad | Add media, or show the full control list during playback |
 | Options | Open the main menu, or the playback menu during playback |
 
