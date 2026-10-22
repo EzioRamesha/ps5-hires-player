@@ -135,7 +135,6 @@ try {
         'src\core\bulk_import.cpp',
         'src\core\diagnostics.cpp',
         'src\core\dlna_protocol.cpp',
-        'src\core\hdr_tonemap.cpp',
         'src\core\library_scanner.cpp',
         'src\core\library_view.cpp',
         'src\core\list_navigation.cpp',
@@ -145,14 +144,9 @@ try {
         'src\core\remote_control.cpp',
         'src\core\safe_read_file.cpp',
         'src\core\source_uri.cpp',
-        'src\core\subtitle_browser.cpp',
-        'src\core\subtitle_provider.cpp',
-        'src\core\video_layout.cpp',
-        'src\core\video_thumbnail.cpp',
         'src\network\dlna_client.cpp',
         'src\core\library_database.cpp',
         'src\core\media_probe.cpp',
-        'src\playback\external_subtitles.cpp',
         'src\ui\library_ui.cpp',
         'src\ui\playback_osd.cpp'
     )
@@ -166,9 +160,7 @@ try {
         $objects += $object
     }
     $cSources = @(
-        'src\playback\kitsubimage_safe.c',
         'src\playback\kitchensink_audio_clock.c',
-        'src\playback\kitchensink_subtitle_timing.c',
         'vendor\SDL_kitchensink\src\kiterror.c',
         'vendor\SDL_kitchensink\src\kitformat.c',
         'vendor\SDL_kitchensink\src\kitlib.c',

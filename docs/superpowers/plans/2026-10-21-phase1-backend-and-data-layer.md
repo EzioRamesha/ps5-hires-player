@@ -505,6 +505,25 @@ tagged, folder conventions are not.
   }
   ```
 
+  **Correction (added after Task 5 landed, 2026-10-22): `media_album_key`'s condition above is
+  wrong and was corrected.** This step used an OR (`!entry.album_artist.empty() ||
+  !entry.album.empty()`) instead of the spec's intended "no album tag at all" condition, which is
+  based on `album` alone — the same condition `media_album_display_name` already uses. A final
+  whole-branch review caught that this made the two functions disagree: because Task 4's prober
+  makes `album_artist` mirror `artist` when no explicit album-artist tag exists, any file with an
+  `artist` tag but no `album` tag got merged into one artist-wide group by `media_album_key` while
+  `media_album_display_name` kept falling back per folder, so the displayed name for that merged
+  group flipped depending on which member the UI read. The implementation was corrected to key the
+  fallback off `album` alone:
+  ```cpp
+  std::string media_album_key(const MediaEntry& entry) {
+      if (!entry.album.empty()) {
+          return entry.album_artist + '\x1F' + entry.album;
+      }
+      return containing_folder(entry.path);
+  }
+  ```
+
 - [ ] **Step 6: Run to verify the tests pass.**
 
 - [ ] **Step 7: Commit.**

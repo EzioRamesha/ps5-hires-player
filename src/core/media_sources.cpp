@@ -175,9 +175,10 @@ void annotate_media_sources(
     // so the (video-only) library UI could group TV-folder sources into
     // series. Task 3 removed those fields from MediaEntry (they have no
     // music-player equivalent), which makes this function a no-op for now.
-    // Task 5 (album grouping) should decide whether MediaSourceKind::tv_folder
-    // and this annotation step still have a purpose, or should be deleted
-    // along with the rest of the TV-folder source model.
+    // Plan 1b (UI rework) should decide whether MediaSourceKind::tv_folder
+    // and this annotation step still have a purpose for a music player, or
+    // should be deleted outright along with the rest of the TV-folder source
+    // model.
     (void)entries;
     (void)sources;
 }

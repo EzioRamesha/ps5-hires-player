@@ -101,36 +101,10 @@ by default. An explicit `BFPLAYER_OUTPUT_POLICY=smooth` compatibility option
 can request proportional 1080p conversion for unusually expensive SDR media;
 it is not used automatically or for native HDR.
 
-For 10-bit BT.2020/PQ, BFplayer configures the PS5 VideoOut HDR10 format and
-presents decoded YUV420P10 frames directly through a 12-worker tiled
-YUV-to-RGB10 path. The output remains BT.2020/PQ, avoiding the former
-HDR-to-SDR conversion and redundant SDL texture copies. HLG follows the same
-native HDR10 path after a BT.2100 HLG OETF/OOTF-to-PQ conversion. A
-precomputed 10-bit table approximates the shared display gain from source luma
-in 64 bins while retaining 10-bit channel input and output, keeping the steady
-4K60 path inside the frame budget. PQ bypasses that table and remains direct.
-
-The direct presenter accepts independent source crop and destination
-rectangles, so original aspect, anamorphic display ratio, letterboxing, crop,
-and manual scale modes remain valid at 4K. The UI keeps a 1920x1080 logical
-canvas; active controls and subtitles are mapped into the physical output and
-blended at an HDR-safe reference level. Non-HDR and unsupported HDR transfers
-retain the bounded SDL software path, including the existing HDR-to-SDR
-fallback when native signalling cannot be enabled.
-
-The video renderer separates decoded pixel dimensions from the stream display
-aspect ratio. Pure, host-tested layout math independently applies the complete
-VLC Desktop aspect-override list, the complete VLC Desktop crop-ratio list,
-and Best fit, Fill screen/center-crop, or Fullscreen stretch. The trigger axes
-modify Triangle while preserving Triangle alone for video-track switching.
-Scale, aspect, and crop selections are playback-local. Every newly opened
-video starts in Best fit, Original aspect, and No crop so a previous manual
-override cannot distort unrelated media.
-
 The selected audio and subtitle stream indices are persisted per media path.
 Language tags are stored alongside the indices so a remux can recover the same
-language even when stream numbering changes. External subtitle paths and timing
-offsets are restored as well; an explicit `--subtitle` argument always wins.
+language even when stream numbering changes; an explicit `--subtitle` argument
+always wins.
 
 Network sources pass through FFmpeg unchanged. The main menu accepts a direct
 URL or opens a DLNA/UPnP MediaServer browser. DLNA discovery uses bounded SSDP
@@ -162,11 +136,7 @@ Embedded subtitles currently supported by Kitchensink are Text, HDMV text,
 SRT/SubRip, SSA/ASS, DVD bitmap, DVB bitmap, and PGS. External subtitles need a
 second FFmpeg demuxer and libass/bitmap renderer because a Kitchensink player is
 bound to one `AVFormatContext`; that layer is deliberately separate from the
-embedded-track implementation. The executable overrides Kitchensink's image
-subtitle renderer with a hardened, symbol-compatible implementation that
-validates rectangle geometry, palette count and indices, bounds cache growth,
-uses the correct FFmpeg RGB32 palette layout, and repairs unsafe cleanup and
-callback behavior in the upstream implementation.
+embedded-track implementation.
 
 ## Library safety rules
 
@@ -184,8 +154,10 @@ callback behavior in the upstream implementation.
 
 The library joins resume data into each indexed row to provide Continue
 Watching and Recently Played views. FFmpeg enrichment records title, duration,
-resolution, container, and primary codecs without competing with playback: the
-library scan thread is cancelled and joined before a movie starts.
+resolution, container, and primary codecs, plus — for audio files — artist,
+album, album artist, track number, disc number, genre, and year, without
+competing with playback: the library scan thread is cancelled and joined
+before a movie starts.
 
 Library search uses the PS5 SDL backend's SceImeDialog bridge. The backend
 delivers the completed UTF-8 string as one or more `SDL_TEXTINPUT` events and a

@@ -31,8 +31,8 @@ int main() {
 
     // annotate_media_sources used to tag entries with series_root/series_title/
     // explicit_movie, which task 3 removed from MediaEntry (video-only fields
-    // with no music-player equivalent); it is now a no-op pending task 5's
-    // decision on whether the TV-folder source model still has a purpose.
+    // with no music-player equivalent); it is now a no-op pending a decision
+    // in Plan 1b on whether the TV-folder source model still has a purpose.
     // The checks below only exercise the parts of this file unrelated to that
     // annotation: serialization, coverage checks, and retention.
     std::vector<MediaEntry> entries{

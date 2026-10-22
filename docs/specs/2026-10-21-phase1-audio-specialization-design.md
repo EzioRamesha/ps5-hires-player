@@ -101,6 +101,18 @@ alongside the existing generic sort/search/query functions (`sort_media_indices`
 [[nodiscard]] std::string media_album_display_name(const MediaEntry& entry);
 ```
 
+**Correction (added after the final whole-branch review of Plan 1a landed, 2026-10-22): the
+fallback condition above was implemented as an OR instead of what this spec actually intends.**
+This spec's own wording — "falls back ... when a file has no album tag at all" — is based on
+`album` alone. Task 5's implementation instead fell back to the folder only when BOTH
+`album_artist` and `album` were empty, which disagreed with `media_album_display_name` (which
+always keyed its own fallback off `album` alone). Since Task 4's metadata prober makes
+`album_artist` mirror `artist` whenever no explicit album-artist tag exists, any file with an
+`artist` tag but no `album` tag — common for ripped/untagged music — got grouped by that one
+artist under a single key while its displayed name kept flipping per folder. The code in
+`media_album_key` was corrected to match this spec's original intent: fall back on `album` alone,
+independent of `album_artist`.
+
 **`src/ui/library_ui.cpp`** — the UI's public interface (`LibraryUi` in
 `include/bfplayer/library_ui.hpp`) does not need to change shape: `open`/`close`/`handle_event`/
 `tick_navigation`/`playback_queue`/`render`/`show_notice` all stay as they are, since

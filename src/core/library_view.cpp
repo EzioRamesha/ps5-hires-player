@@ -253,7 +253,7 @@ std::string folder_name(const std::string& path) {
 } // namespace
 
 std::string media_album_key(const MediaEntry& entry) {
-    if (!entry.album_artist.empty() || !entry.album.empty()) {
+    if (!entry.album.empty()) {
         return entry.album_artist + '\x1F' + entry.album;
     }
     return containing_folder(entry.path);

@@ -110,6 +110,28 @@ int main() {
         bfplayer::media_album_key(partially_tagged) == "\x1F""Compilation",
         "an album tag with no album-artist tag still groups by album alone, not by folder");
 
+    MediaEntry artist_only_a{
+        "/music/Live/ArtistX/2019-05-01/track01.flac",
+        "track01.flac",
+        MediaKind::audio};
+    artist_only_a.album_artist = "ArtistX";
+    // album left empty on purpose — no album tag at all
+
+    MediaEntry artist_only_b{
+        "/music/Live/ArtistX/2021-11-03/track01.flac",
+        "track01.flac",
+        MediaKind::audio};
+    artist_only_b.album_artist = "ArtistX";
+    // album left empty on purpose — same artist, different folder/recording
+
+    check(
+        bfplayer::media_album_key(artist_only_a) != bfplayer::media_album_key(artist_only_b),
+        "an artist tag with no album tag groups by folder, not by artist alone, so two different "
+        "untagged recordings by the same artist are not incorrectly merged into one album group");
+    check(
+        bfplayer::media_album_key(artist_only_a) == "/music/Live/ArtistX/2019-05-01",
+        "the artist-only fallback key is the containing folder, matching the display name's own fallback");
+
     std::string utf8 = "caf\xC3\xA9";
     check(bfplayer::erase_last_utf8_codepoint(utf8) && utf8 == "caf",
           "UTF-8 backspace removes one complete code point");

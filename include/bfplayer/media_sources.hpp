@@ -26,7 +26,7 @@ struct MediaSource {
     const std::string& encoded);
 // Currently a no-op: it used to tag entries with series_root/series_title/
 // explicit_movie, which task 3 removed from MediaEntry. See the definition
-// in media_sources.cpp for what task 5 should decide about this function.
+// in media_sources.cpp for what Plan 1b should decide about this function.
 void annotate_media_sources(
     std::vector<MediaEntry>& entries,
     const std::vector<MediaSource>& sources);
