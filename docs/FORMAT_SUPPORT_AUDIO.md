@@ -180,7 +180,7 @@ ff_qdm2_decoder          ff_qdmc_decoder          ff_ra_144_decoder
 ff_ra_288_decoder        ff_s302m_decoder         ff_sbc_decoder
 ff_smackaud_decoder      ff_twinvq_decoder        ff_vmdaudio_decoder
 ff_ws_snd1_decoder       ff_xma1_decoder          ff_xma2_decoder
-ff_dfpwm_decoder
+ff_dfpwm_decoder         ff_mpc7_decoder          ff_mpc8_decoder
 ```
 
 **Null/placeholder:**
