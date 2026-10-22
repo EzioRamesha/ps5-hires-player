@@ -379,19 +379,18 @@ enum class PlaybackOverlay {
 
 // Background job state for the now-playing artwork decode (see
 // update_now_playing_artwork()). The worker thread (now_playing_artwork_job_
-// entry()) only ever touches the "request_"/"result_"/"loading"/"ready"
-// fields below, and only while holding `mutex`; the main/render thread does
-// the same. The decoded SDL_Surface crosses from the worker to the main
-// thread this way, but the SDL_Texture created from it is only ever touched
-// on the main thread (consume_now_playing_artwork_job()), since SDL textures
-// are tied to the renderer and are not safe to create off its thread.
+// entry()) only ever touches the "request_"/"result_"/"ready" fields below,
+// and only while holding `mutex`; the main/render thread does the same. The
+// decoded SDL_Surface crosses from the worker to the main thread this way,
+// but the SDL_Texture created from it is only ever touched on the main
+// thread (consume_now_playing_artwork_job()), since SDL textures are tied
+// to the renderer and are not safe to create off its thread.
 struct NowPlayingArtworkJob {
     SDL_Thread* thread = nullptr;
     SDL_mutex* mutex = nullptr;
     std::atomic<bool> cancel{false};
     // Guarded by `mutex`:
     std::string request_path;
-    bool loading = false;
     bool ready = false;
     std::string result_artwork_path;
     SDL_Surface* result_surface = nullptr;
@@ -1536,11 +1535,39 @@ void stop_now_playing_artwork_job(App& app) {
         SDL_FreeSurface(job.result_surface);
         job.result_surface = nullptr;
         job.result_artwork_path.clear();
-        job.loading = false;
         job.ready = false;
         SDL_UnlockMutex(job.mutex);
     }
     job.cancel.store(false, std::memory_order_relaxed);
+}
+
+// Reads the raw pixel value at (x, y) in `surface`'s native format, sized
+// according to its BytesPerPixel, and packs it into a Uint32 the way
+// SDL_GetRGB() expects (native byte order; see the "Getting and setting
+// pixels" article on the SDL2 wiki, the standard pattern for reading
+// arbitrary-format pixels without converting the whole surface). Caller
+// must hold `surface`'s lock (if SDL_MUSTLOCK requires one) and pass
+// in-bounds (x, y).
+Uint32 read_surface_pixel(const SDL_Surface* surface, int x, int y) {
+    const Uint8* row =
+        static_cast<const Uint8*>(surface->pixels) +
+        static_cast<std::size_t>(y) * surface->pitch;
+    const Uint8* p = row + static_cast<std::size_t>(x) * surface->format->BytesPerPixel;
+    switch (surface->format->BytesPerPixel) {
+        case 1:
+            return *p;
+        case 2:
+            return *reinterpret_cast<const Uint16*>(p);
+        case 3:
+            if (SDL_BYTEORDER == SDL_BIG_ENDIAN) {
+                return (p[0] << 16) | (p[1] << 8) | p[2];
+            }
+            return p[0] | (p[1] << 8) | (p[2] << 16);
+        case 4:
+            return *reinterpret_cast<const Uint32*>(p);
+        default:
+            return 0;
+    }
 }
 
 // Samples a bounded grid of pixels from a decoded artwork surface to
@@ -1549,45 +1576,49 @@ void stop_now_playing_artwork_job(App& app) {
 // that already produced `surface`. The sample walks an actual strided
 // (x, y) grid -- at most kGridSamples steps in each dimension, so at most
 // kGridSamples^2 pixels are ever touched, never the full surface (which can
-// be up to the ArtworkLimits cap of ~20 million pixels) -- and converts the
-// surface once up front so every sampled pixel is a plain 4-byte read.
-// Walking both dimensions (rather than a flat 1D index stride) also avoids
-// the degenerate case where a power-of-two cover (1024x1024, 2048x2048,
-// ...) makes a 1D stride divide evenly into the width and collapse the
-// sample down to a handful of vertical columns.
+// be up to the ArtworkLimits cap of ~20 million pixels). Deliberately does
+// NOT call SDL_ConvertSurfaceFormat: at the ArtworkLimits cap that would
+// blit and allocate a full ~80MB RGBA32 copy of the already-decoded ~80MB
+// surface just to sample 4096 pixels. Instead each sampled pixel is read in
+// the surface's native format via read_surface_pixel() and unpacked with
+// SDL_GetRGB(), the standard SDL2 pattern for reading arbitrary-format
+// pixels without converting the whole surface. Walking both dimensions
+// (rather than a flat 1D index stride) also avoids the degenerate case
+// where a power-of-two cover (1024x1024, 2048x2048, ...) makes a 1D stride
+// divide evenly into the width and collapse the sample down to a handful of
+// vertical columns.
 SDL_Color sample_now_playing_background_color(SDL_Surface* surface) {
     SDL_Color fallback{0, 0, 0, 255};
     if (!surface || surface->w <= 0 || surface->h <= 0) {
         return fallback;
     }
-    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
-    if (!rgba) {
-        return fallback;
-    }
-    if (SDL_LockSurface(rgba) != 0) {
-        SDL_FreeSurface(rgba);
+    const bool must_lock = SDL_MUSTLOCK(surface);
+    if (must_lock && SDL_LockSurface(surface) != 0) {
         return fallback;
     }
     constexpr int kGridSamples = 64; // up to 64x64 = 4096 samples.
-    const int step_x = std::max(1, rgba->w / kGridSamples);
-    const int step_y = std::max(1, rgba->h / kGridSamples);
-    const Uint8* pixels = static_cast<const Uint8*>(rgba->pixels);
+    const int step_x = std::max(1, surface->w / kGridSamples);
+    const int step_y = std::max(1, surface->h / kGridSamples);
     std::uint64_t sampled = 0;
     std::uint64_t sum_r = 0;
     std::uint64_t sum_g = 0;
     std::uint64_t sum_b = 0;
-    for (int y = 0; y < rgba->h; y += step_y) {
-        const Uint8* row = pixels + static_cast<std::size_t>(y) * rgba->pitch;
-        for (int x = 0; x < rgba->w; x += step_x) {
-            const Uint8* pixel = row + static_cast<std::size_t>(x) * 4;
-            sum_r += pixel[0];
-            sum_g += pixel[1];
-            sum_b += pixel[2];
+    for (int y = 0; y < surface->h; y += step_y) {
+        for (int x = 0; x < surface->w; x += step_x) {
+            const Uint32 pixel_value = read_surface_pixel(surface, x, y);
+            Uint8 r = 0;
+            Uint8 g = 0;
+            Uint8 b = 0;
+            SDL_GetRGB(pixel_value, surface->format, &r, &g, &b);
+            sum_r += r;
+            sum_g += g;
+            sum_b += b;
             ++sampled;
         }
     }
-    SDL_UnlockSurface(rgba);
-    SDL_FreeSurface(rgba);
+    if (must_lock) {
+        SDL_UnlockSurface(surface);
+    }
     if (sampled == 0) {
         return fallback;
     }
@@ -1691,7 +1722,6 @@ int now_playing_artwork_job_entry(void* userdata) {
         job->result_surface = surface;
         job->result_artwork_path = artwork_path;
         job->result_color = color;
-        job->loading = false;
         job->ready = true;
     } else {
         SDL_FreeSurface(surface);
@@ -1786,7 +1816,6 @@ void update_now_playing_artwork(App& app) {
     }
     SDL_LockMutex(job.mutex);
     job.request_path = app.current_media_path;
-    job.loading = true;
     job.ready = false;
     SDL_UnlockMutex(job.mutex);
     job.cancel.store(false, std::memory_order_relaxed);
@@ -1799,9 +1828,6 @@ void update_now_playing_artwork(App& app) {
             bfplayer::DiagnosticLevel::warning,
             "now-playing-artwork thread create failed error=%s",
             SDL_GetError());
-        SDL_LockMutex(job.mutex);
-        job.loading = false;
-        SDL_UnlockMutex(job.mutex);
     }
 }
 
@@ -4279,15 +4305,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     boot_stage("sdl-init-complete");
-    app.now_playing_artwork_job.mutex = SDL_CreateMutex();
-    if (!app.now_playing_artwork_job.mutex) {
-        // Not fatal: update_now_playing_artwork() falls back to showing no
-        // artwork (plain black backdrop) for the whole run if this failed.
-        bfplayer::diagnostics_log(
-            bfplayer::DiagnosticLevel::warning,
-            "now-playing-artwork mutex create failed error=%s",
-            SDL_GetError());
-    }
     Kit_SetHint(KIT_HINT_THREAD_COUNT, kVideoDecoderThreads);
     apply_playback_buffer_policy(playback_buffer_policy(false));
     boot_stage("kitchensink-init-begin");
@@ -4301,6 +4318,20 @@ int main(int argc, char** argv) {
         return 1;
     }
     boot_stage("kitchensink-init-complete");
+    // Created only after Kit_Init succeeds, so this early-return path (and
+    // every other startup error-return above it) never has to decide
+    // whether to destroy a mutex that no worker thread can have touched yet
+    // -- there is nothing here for cleanup() to free, and this path exits
+    // the process immediately after anyway.
+    app.now_playing_artwork_job.mutex = SDL_CreateMutex();
+    if (!app.now_playing_artwork_job.mutex) {
+        // Not fatal: update_now_playing_artwork() falls back to showing no
+        // artwork (plain black backdrop) for the whole run if this failed.
+        bfplayer::diagnostics_log(
+            bfplayer::DiagnosticLevel::warning,
+            "now-playing-artwork mutex create failed error=%s",
+            SDL_GetError());
+    }
     Kit_Version kitchensink_version{};
     Kit_GetVersion(&kitchensink_version);
     SDL_version sdl_version{};
